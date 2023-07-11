@@ -1,5 +1,7 @@
 import numpy as np
 import pandas as pd
+
+from pywr.recorders import *
 from pywr.nodes import Storage
 from scipy.interpolate import Rbf
 from pywr.parameter_property import parameter_property
@@ -93,58 +95,6 @@ class IndexVariableParameter(IndexParameter):
 
 
 IndexVariableParameter.register()
-
-
-class IndexedArrayParameter(Parameter):
-    """Parameter which uses an IndexParameter to index an array of Parameters
-    An example use of this parameter is to return a demand saving factor (as
-    a float) based on the current demand saving level (calculated by an
-    `IndexParameter`).
-    Parameters
-    ----------
-    index_parameter : `IndexParameter`
-    params : iterable of `Parameters` or floats
-    Notes
-    -----
-    Float arguments `params` are converted to `ConstantParameter`
-    """
-    def __init__(self, model, index_parameter, params, **kwargs):
-        super().__init__(model, **kwargs)
-        assert(isinstance(index_parameter, IndexParameter))
-        self.index_parameter = index_parameter
-        self.children.add(index_parameter)
-
-        self.params = []
-        for p in params:
-            if not isinstance(p, Parameter):
-                from pywr.parameters import ConstantParameter
-                p = ConstantParameter(model, p)
-            self.params.append(p)
-
-        for param in self.params:
-            self.children.add(param)
-        self.children.add(index_parameter)
-
-    def value(self, timestep, scenario_index):
-        """Returns the value of the Parameter at the current index"""
-        #index = self.index_parameter.get_index(scenario_index)
-        
-        index = self.index_parameter.get_integer_variables()[0]
-        parameter = self.params[index]
-        return parameter.get_value(scenario_index)
-
-    @classmethod
-    def load(cls, model, data):
-        index_parameter = load_parameter(model, data.pop("index_parameter"))
-        try:
-            parameters = data.pop("params")
-        except KeyError:
-            parameters = data.pop("parameters")
-        parameters = [load_parameter(model, parameter_data) for parameter_data in parameters]
-        return cls(model, index_parameter, parameters, **data)
-
-        
-IndexedArrayParameter.register()
 
 
 class IrrigationWaterRequirementParameter(Parameter):
@@ -273,7 +223,7 @@ class TransientDecisionParameter(Parameter):
     def decision_date():
         def fget(self):
             return self._decision_date
-
+        
         def fset(self, value):
             if isinstance(value, pd.Timestamp):
                 self._decision_date = value
@@ -324,7 +274,7 @@ class TransientDecisionParameter(Parameter):
         # Now setup the feasible dates for when this object is used as a variable.
         self._feasible_dates = pd.date_range(self.earliest_date, self.latest_date,
                                                  freq=self.decision_freq)
-
+        
     def value(self, ts, scenario_index):
 
         if ts is None:
@@ -368,3 +318,181 @@ class TransientDecisionParameter(Parameter):
         return cls(model, before_parameter=before_parameter, after_parameter=after_parameter, **data)
         
 TransientDecisionParameter.register()
+
+
+class RollingNodeFlowRecorder(NodeRecorder):
+    """ Records the mean flow of a node for the previous N timesteps (a window).
+
+    This recorder is different to `RollingMeanFlowNodeRecorder` because for the timesteps lower that the window
+    we save a value passed in the recorder definition
+
+    Parameters
+    ----------
+
+    mode : `pywr.core.Model`
+    node : `pywr.core.Node`
+        The node to record
+    window : int
+        The number of timesteps to calculate the flow rolling mean
+    hist_rolling : int
+        The value to be saved when the timestep is lower that the window
+    name : str (optional)
+        The name of the recorder
+
+    """
+
+    def __init__(self, model, node, window=None, days=None, hist_rolling=None, name=None, **kwargs):
+        super(RollingNodeFlowRecorder, self).__init__(model, node, name=name, **kwargs)
+        # self.model = model
+
+        if not window and not days:
+            raise ValueError("Either `window` or `days` must be specified.")
+        if window:
+            self.window = int(window)
+        else:
+            self.window = 0
+        if days:
+            self.days = int(days)
+        else:
+            self.days = 0
+
+        self._data = None
+        self.position = 0
+
+        if not hist_rolling:
+            raise ValueError("An `hist_rolling` must be specified.")
+        else:
+            self.hist_rolling = hist_rolling
+
+    def setup(self):
+        super(RollingNodeFlowRecorder, self).setup()
+        self._data = np.empty([len(self.model.timestepper), len(self.model.scenarios.combinations)])
+
+        if self.days > 0:
+            try:
+                self.window = self.days // self.model.timestepper.delta
+            except TypeError:
+                raise TypeError('A rolling window defined as a number of days is only valid with daily time-steps.')
+        if self.window == 0:
+            raise ValueError("window property of MeanFlowRecorder is less than 1.")
+
+        self._memory = np.zeros([len(self.model.scenarios.combinations), self.window])
+
+    def reset(self):
+        super(RollingNodeFlowRecorder, self).reset()
+        self.position = 0
+        self._memory[:, :] = 0
+        self._data[:, :] = 0.0
+
+    def after(self):
+
+        # Save today's flow
+        for i in range(0, self._memory.shape[0]):
+            self._memory[i, self.position] = self.node.flow[i]
+
+        # Calculate the mean flow
+        timestep = self.model.timestepper.current
+        if timestep.index < self.window:
+            n = timestep.index + 1
+        else:
+            n = self.window
+
+        # Save the mean flow
+        if timestep.index < self.window:
+            self._data[int(timestep.index), :] = self.hist_rolling
+        else:
+            mean_flow = np.mean(self._memory[:, 0:n], axis=1)
+            self._data[int(timestep.index), :] = mean_flow
+
+        # Prepare for the next timestep
+        self.position += 1
+        if self.position >= self.window:
+            self.position = 0
+
+    @property
+    def data(self):
+        return np.array(self._data, dtype=np.float64)
+
+    def to_dataframe(self):
+        index = self.model.timestepper.datetime_index
+        sc_index = self.model.scenarios.multiindex
+        return pd.DataFrame(data=self.data, index=index, columns=sc_index)
+
+    @classmethod
+    def load(cls, model, data):
+        name = data.get("name")
+        # node = model.nodes[data["node"]] # for the new version of pywr
+        node = model._get_node_from_ref(model, data.pop("node"))
+
+        if "hist_rolling" in data:
+            hist_rolling = data["hist_rolling"]
+        else:
+            hist_rolling = None
+
+        if "window" in data:
+            window = int(data["window"])
+        else:
+            window = None
+
+        if "days" in data:
+            days = int(data["days"])
+        else:
+            days = None
+
+        return cls(model, node, window=window, days=days, hist_rolling=hist_rolling, name=name)
+
+
+RollingNodeFlowRecorder.register()
+
+
+#class IndexedArrayParameter(Parameter):
+#    """Parameter which uses an IndexParameter to index an array of Parameters
+#    An example use of this parameter is to return a demand saving factor (as
+#    a float) based on the current demand saving level (calculated by an
+#    `IndexParameter`).
+#    Parameters
+#    ----------
+#    index_parameter : `IndexParameter`
+#    params : iterable of `Parameters` or floats
+#    Notes
+#    -----
+#    Float arguments `params` are converted to `ConstantParameter`
+#    """
+
+#    def __init__(self, model, index_parameter, params, **kwargs):
+#        super().__init__(model, **kwargs)
+#        assert(isinstance(index_parameter, IndexParameter))
+#        self.index_parameter = index_parameter
+#        self.children.add(index_parameter)
+
+#        self.params = []
+#        for p in params:
+#            if not isinstance(p, Parameter):
+#                p = ConstantParameter(model, p)
+#                from pywr.parameters import ConstantParameter
+#            self.params.append(p)
+
+#        for param in self.params:
+#            self.children.add(param)
+#        self.children.add(index_parameter)
+
+#    def value(self, timestep, scenario_index):
+#        """Returns the value of the Parameter at the current index"""
+#        #index = self.index_parameter.get_index(scenario_index)
+        
+#        index = self.index_parameter.get_integer_variables()[0]
+#        parameter = self.params[index]
+#        return parameter.get_value(scenario_index)
+
+#    @classmethod
+#    def load(cls, model, data):
+#        index_parameter = load_parameter(model, data.pop("index_parameter"))
+#        try:
+#            parameters = data.pop("params")
+#        except KeyError:
+#            parameters = data.pop("parameters")
+#        parameters = [load_parameter(model, parameter_data) for parameter_data in parameters]
+#        return cls(model, index_parameter, parameters, **data)
+
+        
+#IndexedArrayParameter.register()
