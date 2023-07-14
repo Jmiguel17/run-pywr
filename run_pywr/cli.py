@@ -87,7 +87,11 @@ def run(filename):
     writer = pd.ExcelWriter(os.path.join(output_directory, f"{base}_Metrics.xlsx"))
     recorders_.to_excel(writer, 'values')
     agg_recorders.to_excel(writer, 'agg_values')
-    writer.save()
+
+    if pd.__version__ != '2.0.3':
+        writer.save()
+    else:
+        writer.close()
 
     # Save DataFrame recorders
     store = pd.HDFStore(os.path.join(output_directory, f"{base}_Recorders.h5"), mode='w')
