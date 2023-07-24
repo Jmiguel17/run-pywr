@@ -60,8 +60,8 @@ def run(filename):
 
     os.makedirs(os.path.join(output_directory), exist_ok=True)
 
-    TablesRecorder(model, os.path.join(output_directory, f"{base}_Parameters.h5"), parameters=[p for p in model.parameters if p.name is not None])
-    CSVRecorder(model, os.path.join(output_directory, f"{base}_Nodes.csv"))
+    TablesRecorder(model, os.path.join(output_directory, f"{base}_parameters.h5"), parameters=[p for p in model.parameters if p.name is not None])
+    CSVRecorder(model, os.path.join(output_directory, f"{base}_nodes.csv"))
 
     logger.info('Starting model run.')
     ret = model.run()
@@ -84,7 +84,7 @@ def run(filename):
     recorders_ = pd.DataFrame(recorders_).T
     agg_recorders = pd.Series(agg_recorders, dtype=np.float64)
 
-    writer = pd.ExcelWriter(os.path.join(output_directory, f"{base}_Metrics.xlsx"))
+    writer = pd.ExcelWriter(os.path.join(output_directory, f"{base}_metrics.xlsx"))
     recorders_.to_excel(writer, 'values')
     agg_recorders.to_excel(writer, 'agg_values')
 
@@ -94,7 +94,7 @@ def run(filename):
         writer.close()
 
     # Save DataFrame recorders
-    store = pd.HDFStore(os.path.join(output_directory, f"{base}_Recorders.h5"), mode='w')
+    store = pd.HDFStore(os.path.join(output_directory, f"{base}_recorders.h5"), mode='w')
 
     for rec in model.recorders:
         
@@ -162,6 +162,61 @@ def pyborg(config_file, seed):
 
     if use_mpi:
         Configuration.stopMPI()
+
+
+@cli.command(name='run_scenarios')
+@click.option('-s', '--start', type=int, default=None)
+@click.option('-e', '--end', type=int, default=None)
+@click.argument('filename', type=click.Path(file_okay=True, dir_okay=False, exists=True))
+def run_scenarios(filename, start, end):
+    """
+    Run the Pywr model
+    """
+
+    logger.info('Loading model from file: "{}"'.format(filename))
+
+    with open(filename) as jfile:
+        dta = json.load(jfile)
+
+        dta['scenarios'][0]['slice'][0] = start
+        dta['scenarios'][0]['slice'][1] = end
+    
+    model = Model.load(dta, solver='glpk')
+
+    warnings.filterwarnings('ignore', category=tables.NaturalNameWarning)
+    
+    ProgressRecorder(model)
+
+    base, ext = os.path.splitext(filename)
+
+    output_directory = os.path.join(base, f"outputs_{start}_{end}")
+
+    os.makedirs(os.path.join(output_directory), exist_ok=True)
+
+    logger.info('Starting model run.')
+    ret = model.run()
+    logger.info(ret)
+    print(ret.to_dataframe())
+
+    # Save DataFrame recorders
+    store = pd.HDFStore(os.path.join(output_directory, f"{base}_recorders.h5"), mode='w')
+
+    for rec in model.recorders:
+        
+        if hasattr(rec, 'to_dataframe'):
+            df = rec.to_dataframe()
+            store[rec.name] = df
+
+        try:
+            values = np.array(rec.values())
+
+        except NotImplementedError:
+            pass
+        
+        else:
+            store[f"{rec.name}_values"] = pd.Series(values)
+    
+    store.close()
 
 
 @cli.command(name='pywr_mpi_borg')
