@@ -167,8 +167,9 @@ def pyborg(config_file, seed):
 @cli.command(name='run_scenarios')
 @click.option('-s', '--start', type=int, default=None)
 @click.option('-e', '--end', type=int, default=None)
+@click.option('-r', '--resample', default=False)
 @click.argument('filename', type=click.Path(file_okay=True, dir_okay=False, exists=True))
-def run_scenarios(filename, start, end):
+def run_scenarios(filename, start, end, resample):
     """
     Run the Pywr model
     """
@@ -205,7 +206,13 @@ def run_scenarios(filename, start, end):
         
         if hasattr(rec, 'to_dataframe'):
             df = rec.to_dataframe()
-            store[rec.name] = df
+
+            if resample == True:
+                df = df.resample('M').mean()
+                store[rec.name] = df
+
+            else:
+                store[rec.name] = df
 
         try:
             values = np.array(rec.values())
