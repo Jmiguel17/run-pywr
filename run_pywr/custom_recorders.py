@@ -6,7 +6,6 @@ import pandas as pd
 #from pywr.parameters import load_parameter
 from pywr.recorders import NumpyArrayNodeRecorder, NodeRecorder, Aggregator, NumpyArrayStorageRecorder, NumpyArrayAbstractStorageRecorder
 
-
 class NumpyArrayAnnualNodeDeficitFrequencyRecorder(NodeRecorder):
 
     """
@@ -324,3 +323,301 @@ class NashSutcliffeEfficiencyStorageRecorder(AbstractComparisonStorageRecorder):
 
 
 NashSutcliffeEfficiencyStorageRecorder.register()
+
+
+class ReservoirMonthlyReliabilityRecorder(NumpyArrayAbstractStorageRecorder):
+
+    """
+    1 - (Total months below minimum storage level / total months in simulation)
+    """
+
+    def __init__(self, model, node, threshold, **kwargs):
+        super().__init__(model, node, **kwargs)
+        self.threshold = threshold
+
+    def setup(self):
+        ncomb = len(self.model.scenarios.combinations)
+        nts = len(self.model.timestepper)
+
+        self._data = np.zeros((nts, ncomb))
+
+    def reset(self):
+        self._data[:, :] = 0.0
+                
+    def after(self):
+        ts = self.model.timestepper.current
+        node = self.node
+
+        for scenario_index in self.model.scenarios.combinations:
+            max_volume = node.get_max_volume(scenario_index)
+
+            if node.volume[scenario_index.global_id] < max_volume * self.threshold:
+                self._data[ts.index,scenario_index.global_id] = 1
+
+            else:
+                self._data[ts.index,scenario_index.global_id] = 0
+
+        return 0
+
+    def values(self):
+
+        index = self.model.timestepper.datetime_index
+        sc_index = self.model.scenarios.multiindex
+
+        DataFrame = pd.DataFrame(np.array(self._data), index=index, columns=sc_index).resample('M').max()
+
+        return 1 - ((DataFrame.sum().round(0) / DataFrame.shape[0]))
+    
+    def to_dataframe(self):
+
+        raise NotImplementedError()
+
+
+ReservoirMonthlyReliabilityRecorder.register()
+
+
+class ReservoirAnnualReliabilityRecorder(NumpyArrayAbstractStorageRecorder):
+
+    """
+    1 - (Total years below minimum storage level / total years in simulation)
+    """
+
+    def __init__(self, model, node, threshold, **kwargs):
+        super().__init__(model, node, **kwargs)
+        self.threshold = threshold
+
+    def setup(self):
+        ncomb = len(self.model.scenarios.combinations)
+        nts = len(self.model.timestepper)
+
+        self._data = np.zeros((nts, ncomb))
+
+    def reset(self):
+        self._data[:, :] = 0.0
+                
+    def after(self):
+        ts = self.model.timestepper.current
+        node = self.node
+
+        for scenario_index in self.model.scenarios.combinations:
+            max_volume = node.get_max_volume(scenario_index)
+
+            if node.volume[scenario_index.global_id] < max_volume * self.threshold:
+                self._data[ts.index,scenario_index.global_id] = 1
+
+            else:
+                self._data[ts.index,scenario_index.global_id] = 0
+
+        return 0
+
+    def values(self):
+
+        index = self.model.timestepper.datetime_index
+        sc_index = self.model.scenarios.multiindex
+
+        DataFrame = pd.DataFrame(np.array(self._data), index=index, columns=sc_index).resample('Y').max()
+
+        return 1 - ((DataFrame.sum().round(0) / DataFrame.shape[0]))
+    
+    def to_dataframe(self):
+        
+        raise NotImplementedError()
+
+
+ReservoirAnnualReliabilityRecorder.register()
+
+
+class SupplyReliabilityRecorder(NodeRecorder):
+
+    """
+    add description
+    """
+
+    def __init__(self, model, node, **kwargs):
+        super().__init__(model, node, **kwargs)
+
+    def setup(self):
+        ncomb = len(self.model.scenarios.combinations)
+        nts = len(self.model.timestepper)
+
+        self._data = np.zeros((nts, ncomb))
+
+    def reset(self):
+        self._data[:, :] = 0.0
+                
+    def after(self):
+        ts = self.model.timestepper.current
+        node = self.node
+
+        for scenario_index in self.model.scenarios.combinations:
+            max_flow = node.get_max_flow(scenario_index)
+
+            deficit  = (max_flow - node.flow[scenario_index.global_id]) / max_flow
+
+            if deficit > 0.01:
+                self._data[ts.index,scenario_index.global_id] = 1
+
+            else:
+                self._data[ts.index,scenario_index.global_id] = 0
+
+        return 0
+
+    def values(self):
+
+        index = self.model.timestepper.datetime_index
+        sc_index = self.model.scenarios.multiindex
+
+        DataFrame = pd.DataFrame(np.array(self._data), index=index, columns=sc_index).resample('M').max()
+
+        return 1 - ((DataFrame.sum().round(0) / DataFrame.shape[0]))
+    
+    def to_dataframe(self):
+        
+        raise NotImplementedError()
+
+
+SupplyReliabilityRecorder.register()
+
+
+class AnnualDeficitRecorder(NodeRecorder):
+
+    """
+    add description
+    """
+
+    def __init__(self, model, node, **kwargs):
+        temporal_agg_func = kwargs.pop('temporal_agg_func', 'mean')
+        
+        super().__init__(model, node, **kwargs)
+        self.temporal_aggregator = temporal_agg_func
+
+    def setup(self):
+        ncomb = len(self.model.scenarios.combinations)
+        nts = len(self.model.timestepper)
+
+        self._supply = np.zeros((nts, ncomb))
+        self._demand = np.zeros((nts, ncomb))
+
+    def reset(self):
+        self._supply[:, :] = 0.0
+        self._demand[:, :] = 0.0
+                
+    def after(self):
+        ts = self.model.timestepper.current
+        node = self.node
+
+        for scenario_index in self.model.scenarios.combinations:
+
+            self._supply[ts.index, scenario_index.global_id] = node.flow[scenario_index.global_id]
+            self._demand[ts.index, scenario_index.global_id] = node.get_max_flow(scenario_index)
+
+        return 0
+
+    def values(self):
+
+        index = self.model.timestepper.datetime_index
+        sc_index = self.model.scenarios.multiindex
+
+        supply = pd.DataFrame(np.array(self._supply), index=index, columns=sc_index).resample('Y').sum()
+        demand = pd.DataFrame(np.array(self._demand), index=index, columns=sc_index).resample('Y').sum()
+
+        rlts = 1 - supply.divide(demand)
+
+        if self.temporal_aggregator == 'mean':
+            to_save = rlts.mean()
+
+        if self.temporal_aggregator == 'max':
+            to_save = rlts.max()
+
+        if self.temporal_aggregator == 'min':
+            to_save = rlts.min()
+
+        return to_save
+    
+    def to_dataframe(self):
+        
+        raise NotImplementedError()
+
+
+AnnualDeficitRecorder.register()
+
+
+class ReservoirResilienceRecorder(NumpyArrayAbstractStorageRecorder):
+
+    """
+    add description
+    """
+
+    def __init__(self, model, node, threshold, **kwargs):
+        temporal_agg_func = kwargs.pop('temporal_agg_func', 'mean')
+        
+        super().__init__(model, node, **kwargs)
+        self.temporal_aggregator = temporal_agg_func
+        self.threshold = threshold
+
+    def setup(self):
+        ncomb = len(self.model.scenarios.combinations)
+        nts = len(self.model.timestepper)
+
+        self._data = np.zeros((nts, ncomb))
+
+    def reset(self):
+        self._data[:, :] = 0.0
+                
+    def after(self):
+        ts = self.model.timestepper.current
+        node = self.node
+
+        for scenario_index in self.model.scenarios.combinations:
+            max_volume = node.get_max_volume(scenario_index)
+
+            if node.volume[scenario_index.global_id] < max_volume * self.threshold:
+                self._data[ts.index,scenario_index.global_id] = 1
+
+            else:
+                self._data[ts.index,scenario_index.global_id] = 0
+
+        return 0
+
+    def values(self):
+
+        index = self.model.timestepper.datetime_index
+        sc_index = self.model.scenarios.multiindex
+
+        tem_dams = pd.DataFrame(np.array(self._data), index=index, columns=sc_index)
+
+        tem_dams_diff = tem_dams.diff().ne(0).cumsum()
+        
+        tem_dams_occurrence = tem_dams.multiply(tem_dams_diff)
+
+        resilience = {}
+        
+        for idx, dataframe in tem_dams_occurrence.groupby(level=[0,1,2,3,4], axis=1):
+            
+            tem = dataframe.T.reset_index(drop=True).T
+            
+            tem.columns = ['col']
+            
+            tem_res = tem[tem['col'] != 0].groupby(['col'])['col'].count()
+
+            if self.temporal_aggregator == 'mean':
+                resilience[idx] = tem_res.mean()
+                
+            if self.temporal_aggregator == 'max':
+                resilience[idx] = tem_res.max()
+            
+        
+        rlts = pd.DataFrame.from_dict(resilience, orient='index', columns=[""])
+
+        rlts = rlts.T
+
+        rlts.columns = pd.MultiIndex.from_tuples(rlts.columns, names=sc_index.names)
+
+        return rlts.T
+    
+    def to_dataframe(self):
+        
+        raise NotImplementedError()
+
+
+ReservoirResilienceRecorder.register()
