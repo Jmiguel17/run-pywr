@@ -60,6 +60,7 @@ def run(filename):
 
     os.makedirs(os.path.join(output_directory), exist_ok=True)
 
+    #TablesRecorder(model, os.path.join(output_directory, f"{base}_parameters.h5"), parameters=[p for p in model.parameters if p.name is not None])
     TablesRecorder(model, os.path.join(output_directory, f"{base}_parameters.h5"), parameters=[p for p in model.parameters if p.name is not None])
     CSVRecorder(model, os.path.join(output_directory, f"{base}_nodes.csv"))
 
@@ -88,30 +89,44 @@ def run(filename):
     recorders_.to_excel(writer, 'values')
     agg_recorders.to_excel(writer, 'agg_values')
 
-    if pd.__version__ != '2.0.3':
-        writer.save()
+    if pd.__version__ >= '2.0.3':
+        writer._save()
     else:
         writer.close()
 
-    # Save DataFrame recorders
-    store = pd.HDFStore(os.path.join(output_directory, f"{base}_recorders.h5"), mode='w')
+    if any(s.size > 1 for s in model.scenarios.scenarios):
+        # Save DataFrame recorders
+        store = pd.HDFStore(os.path.join(output_directory, f"{base}_recorders.h5"), mode='w')
 
-    for rec in model.recorders:
+        for rec in model.recorders:
+            if hasattr(rec, 'to_dataframe'):
+                df = rec.to_dataframe()
+                store[rec.name] = df
+
+            try:
+                values = np.array(rec.values())
+
+            except NotImplementedError:
+                pass
+            
+            else:
+                store[f"{rec.name}_values"] = pd.Series(values)
         
-        if hasattr(rec, 'to_dataframe'):
-            df = rec.to_dataframe()
-            store[rec.name] = df
+        store.close()
 
-        try:
-            values = np.array(rec.values())
-
-        except NotImplementedError:
-            pass
+    else:
+        nmes = []
+        rec_to_csv = []
         
-        else:
-            store[f"{rec.name}_values"] = pd.Series(values)
-    
-    store.close()
+        for rec in model.recorders:
+            if hasattr(rec, 'to_dataframe'):
+                df = rec.to_dataframe()
+                nmes.append(rec.name)
+                rec_to_csv.append(df) 
+
+        rec_to_csv = pd.concat(rec_to_csv, axis=1)
+        rec_to_csv.columns = nmes
+        rec_to_csv.to_csv(os.path.join(output_directory, f"{base}_recorders.csv"))
 
 
 @cli.command(name='pyborg')
@@ -135,6 +150,7 @@ def pyborg(config_file, seed):
     model_name = dta["search_configuration"]["model_name"]
 
     cluster = dta["search_configuration"]["cluster"]
+    frequency = dta["search_configuration"]["output_frequency"]
 
     if cluster == "UoM":
         search_data = {'algorithm': 'Borg', 'seed': seed}
@@ -146,6 +162,9 @@ def pyborg(config_file, seed):
     if seed is None:
         seed = random.randrange(sys.maxsize)
 
+    runtime_file = f'{model_name[0:-5]}_seed{seed}_runtime_%d.txt'
+    runtime_file_path = os.path.join(out_dir, runtime_file)
+
     wrapper = PyretoJSONBorgWrapper(model_file, search_data=search_data, output_directory=out_dir, model_name=model_name, seed=seed)
 
     if seed is not None:
@@ -155,10 +174,12 @@ def pyborg(config_file, seed):
 
     if use_mpi:
         Configuration.startMPI()
-        wrapper.problem.solveMPI(islands=1, maxEvaluations=max_nfe)
+        wrapper.problem.solveMPI(islands=1, maxEvaluations=max_nfe, frequency=frequency, runtime=runtime_file_path)
 
     else:
-        wrapper.problem.solve({"maxEvaluations": max_nfe})
+        print(f"Running Borg with {max_nfe} evaluations")
+        wrapper.problem.solve({"maxEvaluations": max_nfe, "runtimeformat": 'borg', "frequency": frequency,
+                                "runtimefile": runtime_file_path})
 
     if use_mpi:
         Configuration.stopMPI()
@@ -340,6 +361,88 @@ def pywr_borg(config_file, seed):
         json.dump(model.archive_to_dict(), fh, sort_keys=True, indent=4)
 
     model.archive.printf()
+
+@cli.command()
+@click.argument('filename', type=click.Path(file_okay=True, dir_okay=False, exists=True))
+@click.option('--use-mpi/--no-use-mpi', default=False)
+@click.option('-s', '--seed', type=int, default=None)
+@click.option('-p', '--num-cpus', type=int, default=None)
+@click.option('-n', '--max-nfe', type=int, default=1000)
+@click.option('--pop-size', type=int, default=50)
+@click.option('-a', '--algorithm', type=click.Choice(['NSGAII', 'NSGAIII', 'EpsMOEA', 'EpsNSGAII']), default='NSGAII')
+@click.option('-w', '--wrapper-type', type=click.Choice(['json', 'mongo', 'wpywr']), default='json')
+@click.option('-e', '--epsilons', multiple=True, type=float, default=(0.05, ))
+@click.option('--divisions-outer', type=int, default=12)
+@click.option('--divisions-inner', type=int, default=0)
+def search(filename, use_mpi, seed, num_cpus, max_nfe, pop_size, algorithm, wrapper_type, epsilons, divisions_outer, divisions_inner):
+    import platypus
+    from run_moea.BsonPlatypusWrapper import LoggingArchive , PyretoJSONPlatypusWrapper
+
+    logger.info('Loading model from file: "{}"'.format(filename))
+    directory, model_name = os.path.split(filename)
+    output_directory = os.path.join(directory, 'outputs')
+
+    if algorithm == 'NSGAII':
+        algorithm_klass = platypus.NSGAII
+        algorithm_kwargs = {'population_size': pop_size}
+    elif algorithm == 'NSGAIII':
+        algorithm_klass = platypus.NSGAIII
+        algorithm_kwargs = {'divisions_outer': divisions_outer, 'divisions_inner': divisions_inner}
+    elif algorithm == 'EpsMOEA':
+        algorithm_klass = platypus.EpsMOEA
+        algorithm_kwargs = {'population_size': pop_size, 'epsilons': epsilons}
+    elif algorithm == 'EpsNSGAII':
+        algorithm_klass = platypus.EpsMOEA
+        algorithm_kwargs = {'population_size': pop_size, 'epsilons': epsilons}
+    else:
+        raise RuntimeError('Algorithm "{}" not supported.'.format(algorithm))
+
+    if seed is None:
+        seed = random.randrange(sys.maxsize)
+
+    search_data = {'algorithm': algorithm, 'seed': seed, 'user_metadata':algorithm_kwargs}
+    if wrapper_type == 'json':
+        wrapper = PyretoJSONPlatypusWrapper(filename, search_data=search_data, output_directory=output_directory)
+    else:
+        raise ValueError(f'Wrapper type "{wrapper_type}" not supported.')
+
+    if seed is not None:
+        random.seed(seed)
+
+    logger.info('Starting model search.')
+
+    # Use only to multi-node
+    if use_mpi:
+
+        from platypus.mpipool import MPIPool
+
+        pool = MPIPool()
+        evaluator_klass = platypus.PoolEvaluator
+        evaluator_args = (pool,)
+
+        if not pool.is_master():
+            pool.wait()
+            sys.exit(0)
+
+    elif num_cpus is None:
+        evaluator_klass = platypus.MapEvaluator
+        evaluator_args = ()
+
+    else:
+        evaluator_klass = platypus.ProcessPoolEvaluator
+        evaluator_args = (num_cpus,)
+
+    with evaluator_klass(*evaluator_args) as evaluator:
+        algorithm = algorithm_klass(wrapper.problem, evaluator=evaluator, **algorithm_kwargs, seed=seed)
+
+        if wrapper_type == 'wpywr':
+            algorithm.run(max_nfe, callback=wrapper.save_nondominant)
+        else:
+            algorithm.run(max_nfe)
+
+    # Use only to multi-node
+    if use_mpi:
+        pool.close()
 
 
 if __name__ == '__main__':
