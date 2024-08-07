@@ -128,62 +128,68 @@ def run(filename):
         rec_to_csv.columns = nmes
         rec_to_csv.to_csv(os.path.join(output_directory, f"{base}_recorders.csv"))
 
+@cli.command(name='borg_optimise')
+@click.argument('filename', type=click.Path(file_okay=True, dir_okay=False, exists=True))
+@click.option('-s', '--seed', type=int, default=None)
+@click.option('-u', '--use-mpi', default=False)
+@click.option('-n', '--max-nfe', type=int, default=1000)
+@click.option('-f', '--frequency', type=int, default=500)
+def borg_optimise(filename, seed, use_mpi, max_nfe, frequency):
+
+    from run_moea.BorgWrapper import BorgWrapper
+
+    wrapper = BorgWrapper(filename, seed, max_nfe, use_mpi, frequency)
+    wrapper.run()
+
 
 @cli.command(name='pyborg')
-@click.argument('config_file', type=click.Path(file_okay=True, dir_okay=False, exists=True))
+@click.argument('filename', type=click.Path(file_okay=True, dir_okay=False, exists=True))
 @click.option('-s', '--seed', type=int, default=None)
-def pyborg(config_file, seed):
-    
+@click.option('-u', '--use-mpi', default=False)
+@click.option('-n', '--max-nfe', type=int, default=1000)
+@click.option('-f', '--frequency', type=int, default=None)
+@click.option('-i', '--islands', type=int, default=1)
+def pyborg(filename, seed, use_mpi, max_nfe, frequency, islands):
+
     from run_moea.borg import Configuration
-    from run_moea.BsonBorgWrapper import LoggingArchive , PyretoJSONBorgWrapper
-
-    with open(config_file) as config:
-        dta = json.load(config)
-
-    max_nfe = dta["search_configuration"]["max-nfe"]
-    use_mpi = dta["search_configuration"]["use-mpi"]
-    model_file = dta["search_configuration"]["model_file"]
-
-    logger.info('Loading model from file: "{}"'.format(model_file))
-
-    out_dir = dta["search_configuration"]["output_directory"]
-    model_name = dta["search_configuration"]["model_name"]
-
-    cluster = dta["search_configuration"]["cluster"]
-    frequency = dta["search_configuration"]["output_frequency"]
-
-    if cluster == "UoM":
-        search_data = {'algorithm': 'Borg', 'seed': seed}
+    from run_moea.BsonBorgWrapper import PyretoJSONBorgWrapper
     
-    else:
-        seed = dta["search_configuration"]["seed"]
-        search_data = {'algorithm': 'Borg', 'seed': seed}
+    directory, model_name = os.path.split(filename)
+    output_directory = os.path.join(directory, 'outputs')
 
     if seed is None:
         seed = random.randrange(sys.maxsize)
 
-    runtime_file = f'{model_name[0:-5]}_seed{seed}_runtime_%d.txt'
-    runtime_file_path = os.path.join(out_dir, runtime_file)
-
-    wrapper = PyretoJSONBorgWrapper(model_file, search_data=search_data, output_directory=out_dir, model_name=model_name, seed=seed)
-
     if seed is not None:
         random.seed(seed)
+
+    search_data = {'algorithm': 'Borg', 'seed': seed}
+
+    runtime_file = f'{model_name[0:-5]}_seed-{seed}_runtime%d.txt'
+    runtime_file_path = os.path.join(output_directory, runtime_file)
+
+    wrapper = PyretoJSONBorgWrapper(filename, search_data=search_data, output_directory=output_directory, 
+                                    model_name=model_name[0:-5], seed=seed)
 
     logger.info('Starting model search.')
 
     if use_mpi:
         Configuration.startMPI()
-        wrapper.problem.solveMPI(islands=1, maxEvaluations=max_nfe, frequency=frequency, runtime=runtime_file_path)
+        results = wrapper.problem.solveMPI(islands=islands, maxEvaluations=max_nfe, runtime=runtime_file_path) #frequency=frequency,
+        
+        if results is not None:
+            print(results)
+        
+        logger.info('Optimisation complete')
 
+        Configuration.stopMPI()
+    
     else:
         print(f"Running Borg with {max_nfe} evaluations")
-        wrapper.problem.solve({"maxEvaluations": max_nfe, "runtimeformat": 'borg', "frequency": frequency,
+        results = wrapper.problem.solve({"maxEvaluations": max_nfe, "runtimeformat": 'borg', "frequency": frequency,
                                 "runtimefile": runtime_file_path})
-
-    if use_mpi:
-        Configuration.stopMPI()
-
+        
+        logger.info('Optimisation complete')
 
 @cli.command(name='run_scenarios')
 @click.option('-s', '--start', type=int, default=None)
@@ -314,54 +320,6 @@ def pywr_mpi_borg(config_file, seed):
         model.archive.printf()
 
 
-@cli.command(name='pywr_borg')
-@click.option('-s', '--seed', type=int, default=None)
-@click.argument('config_file', type=click.Path(file_okay=True, dir_okay=False, exists=True))
-def pywr_borg(config_file, seed):
-
-    from pywr_borg import BorgModel, BorgRandomSeed
-
-    with open(config_file) as config:
-        dta = json.load(config)
-
-    max_nfe = dta["search_configuration"]["max-nfe"]
-    cluster = dta["search_configuration"]["cluster"]
-    model_file = dta["search_configuration"]["model_file"]
-    results_file = dta["search_configuration"]["results_file"]
-    output_directory = dta["search_configuration"]["output_directory"]
-
-    if cluster == "UoM":
-        BorgRandomSeed(seed)
-    
-    else:
-        seed = dta["search_configuration"]["seed"]
-        BorgRandomSeed(seed)
-
-    if seed is None:
-        seed = random.randrange(sys.maxsize)
-        BorgRandomSeed(seed)
-
-    out_dir = os.path.join(os.getcwd(), f'{output_directory}_{seed}')
-    os.makedirs(out_dir, exist_ok=True)
-
-    model = BorgModel.load(model_file)
-    
-    logger.info("Setting up model")
-    model.setup()
-    
-    logger.info("Running model")
-    model.run(max_nfe)
-    logger.info('Optimisation complete')
-    
-    logger.info('{:d} solutions found in the Pareto-approximate set.'.format(len(model.archive)))
-    
-    # Log run statistics.
-    with open(os.path.join(out_dir, results_file), mode='w') as fh:
-
-        json.dump(model.archive_to_dict(), fh, sort_keys=True, indent=4)
-
-    model.archive.printf()
-
 @cli.command()
 @click.argument('filename', type=click.Path(file_okay=True, dir_okay=False, exists=True))
 @click.option('--use-mpi/--no-use-mpi', default=False)
@@ -445,11 +403,58 @@ def search(filename, use_mpi, seed, num_cpus, max_nfe, pop_size, algorithm, wrap
         pool.close()
 
 
-if __name__ == '__main__':
+#@cli.command(name='pywr_borg')
+#@click.option('-s', '--seed', type=int, default=None)
+#@click.argument('config_file', type=click.Path(file_okay=True, dir_okay=False, exists=True))
+#def pywr_borg(config_file, seed):
 
+#    from pywr_borg import BorgModel, BorgRandomSeed
+
+#    with open(config_file) as config:
+#        dta = json.load(config)
+
+#    max_nfe = dta["search_configuration"]["max-nfe"]
+#    cluster = dta["search_configuration"]["cluster"]
+#    model_file = dta["search_configuration"]["model_file"]
+#    results_file = dta["search_configuration"]["results_file"]
+#    output_directory = dta["search_configuration"]["output_directory"]
+
+#    if cluster == "UoM":
+#        BorgRandomSeed(seed)
+    
+#    else:
+#        seed = dta["search_configuration"]["seed"]
+#        BorgRandomSeed(seed)
+
+#    if seed is None:
+#        seed = random.randrange(sys.maxsize)
+#        BorgRandomSeed(seed)
+
+#    out_dir = os.path.join(os.getcwd(), f'{output_directory}_{seed}')
+#    os.makedirs(out_dir, exist_ok=True)
+
+#    model = BorgModel.load(model_file)
+    
+#    logger.info("Setting up model")
+#    model.setup()
+    
+#    logger.info("Running model")
+#    model.run(max_nfe)
+#    logger.info('Optimisation complete')
+    
+#    logger.info('{:d} solutions found in the Pareto-approximate set.'.format(len(model.archive)))
+    
+    # Log run statistics.
+#    with open(os.path.join(out_dir, results_file), mode='w') as fh:
+
+#        json.dump(model.archive_to_dict(), fh, sort_keys=True, indent=4)
+
+#    model.archive.printf()
+
+
+if __name__ == '__main__':
     cli()
 
 
 def start_cli():
-
     cli()
