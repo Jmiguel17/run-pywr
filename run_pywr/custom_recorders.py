@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 #from pywr.parameters import load_parameter
-from pywr.recorders import NumpyArrayNodeRecorder, NodeRecorder, Aggregator, NumpyArrayStorageRecorder, NumpyArrayAbstractStorageRecorder
+from pywr.recorders import NumpyArrayNodeRecorder, NodeRecorder, Aggregator, NumpyArrayStorageRecorder, NumpyArrayAbstractStorageRecorder, Recorder
 
 class NumpyArrayAnnualNodeDeficitFrequencyRecorder(NodeRecorder):
 
@@ -452,7 +452,11 @@ class SupplyReliabilityRecorder(NodeRecorder):
         for scenario_index in self.model.scenarios.combinations:
             max_flow = node.get_max_flow(scenario_index)
 
-            deficit  = (max_flow - node.flow[scenario_index.global_id]) / max_flow
+            if max_flow == 0:
+                deficit = 0
+
+            else:
+                deficit  = (max_flow - node.flow[scenario_index.global_id]) / max_flow
 
             if deficit > 0.01:
                 self._data[ts.index,scenario_index.global_id] = 1
@@ -621,3 +625,96 @@ class ReservoirResilienceRecorder(NumpyArrayAbstractStorageRecorder):
 
 
 ReservoirResilienceRecorder.register()
+
+
+class RelativeCropYieldRecorder(Recorder):
+    """Relative crop yield recorder.
+
+    This recorder computes the relative crop yield based on a curtailment ratio between a node's
+    actual flow and it's `max_flow` expected flow. It is assumed the `max_flow` parameter is an
+    `AggregatedParameter` containing only `IrrigationWaterRequirementParameter` parameters.
+
+    """
+    def __init__(self, model, nodes, **kwargs):
+        temporal_agg_func = kwargs.pop('temporal_agg_func', 'mean')
+        super().__init__(model, **kwargs)
+
+        for node in nodes:
+            max_flow_param = node.max_flow
+            self.children.add(max_flow_param)
+
+        self.nodes = nodes
+        self._temporal_aggregator = Aggregator(temporal_agg_func)
+        self.data = None
+
+    def setup(self):
+        ncomb = len(self.model.scenarios.combinations)
+        nts = len(self.model.timestepper)
+        self.data = np.zeros((nts, ncomb))
+
+    def reset(self):
+        self.data[:, :] = 0.0
+
+    def after(self):
+
+        norm_crop_revenue = None
+        full_norm_crop_revenue = None
+        ts = self.model.timestepper.current
+        self.data[ts.index, :] = 0
+        norm_yield = 0
+        full_norm_yield = 0
+
+        for node in self.nodes:
+            crop_aggregated_parameter = node.max_flow
+            actual = node.flow
+            requirement = np.array(crop_aggregated_parameter.get_all_values())
+            # Divide non-zero elements
+            curtailment_ratio = np.divide(actual, requirement, out=np.zeros_like(actual), where=requirement != 0)
+            no_curtailment = np.ones_like(curtailment_ratio)
+
+            if norm_crop_revenue is None:
+                norm_crop_revenue = crop_aggregated_parameter.parameters[0].crop_revenue(curtailment_ratio)
+                full_norm_crop_revenue = crop_aggregated_parameter.parameters[0].crop_revenue(no_curtailment)
+
+            for parameter in crop_aggregated_parameter.parameters:
+                crop_revenue = parameter.crop_revenue(curtailment_ratio)
+                full_crop_revenue = parameter.crop_revenue(no_curtailment)
+                crop_yield = parameter.crop_yield(curtailment_ratio)
+                full_crop_yield = parameter.crop_yield(no_curtailment)
+                # Increment effective yield, scaled by the first crop's revenue
+                norm_yield += crop_yield * np.divide(crop_revenue, norm_crop_revenue,
+                                                    out=np.zeros_like(crop_revenue),
+                                                    where=norm_crop_revenue != 0)
+
+                full_norm_yield += full_crop_yield * np.divide(full_crop_revenue, full_norm_crop_revenue,
+                                                              out=np.ones_like(full_crop_revenue),
+                                                              where=full_norm_crop_revenue != 0)
+                
+                if requirement<0.00001:
+                    self.data[ts.index, :] = 99999
+                else:
+                    self.data[ts.index, :] = norm_yield / full_norm_yield
+
+    def values(self):
+        """Compute a value for each scenario using `temporal_agg_func`.
+        """
+        return self._temporal_aggregator.aggregate_2d(self.data, axis=0, ignore_nan=self.ignore_nan)
+
+    def to_dataframe(self):
+        """ Return a `pandas.DataFrame` of the recorder data
+
+        This DataFrame contains a MultiIndex for the columns with the recorder name
+        as the first level and scenario combination names as the second level. This
+        allows for easy combination with multiple recorder's DataFrames
+        """
+        index = self.model.timestepper.datetime_index
+        sc_index = self.model.scenarios.multiindex
+
+        return pd.DataFrame(data=np.array(self.data), index=index, columns=sc_index)
+
+    @classmethod
+    def load(cls, model, data):
+        nodes = [model._get_node_from_ref(model, n) for n in data.pop('nodes')]
+        return cls(model, nodes, **data)
+
+RelativeCropYieldRecorder.register()

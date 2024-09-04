@@ -16,6 +16,11 @@ from .custom_parameters import *
 from pywr.recorders.progress import ProgressRecorder
 from pywr.recorders import TablesRecorder, CSVRecorder
 
+# Suppress warnings in current Pywr
+warnings.filterwarnings("ignore", category=RuntimeWarning, message=r".*Document requires version.*")  # optimisation/__init__.py:111
+warnings.filterwarnings("ignore", category=FutureWarning, message=r".*Resampling with a PeriodIndex.*")  # dataframe_tools.py:127
+warnings.filterwarnings("ignore", category=FutureWarning, message=".*'M' is deprecated.*")  # dataframe_tools.py:127
+
 import logging
 logger = logging.getLogger(__name__)
 
@@ -127,19 +132,6 @@ def run(filename):
         rec_to_csv = pd.concat(rec_to_csv, axis=1)
         rec_to_csv.columns = nmes
         rec_to_csv.to_csv(os.path.join(output_directory, f"{base}_recorders.csv"))
-
-@cli.command(name='borg_optimise')
-@click.argument('filename', type=click.Path(file_okay=True, dir_okay=False, exists=True))
-@click.option('-s', '--seed', type=int, default=None)
-@click.option('-u', '--use-mpi', default=False)
-@click.option('-n', '--max-nfe', type=int, default=1000)
-@click.option('-f', '--frequency', type=int, default=500)
-def borg_optimise(filename, seed, use_mpi, max_nfe, frequency):
-
-    from run_moea.BorgWrapper import BorgWrapper
-
-    wrapper = BorgWrapper(filename, seed, max_nfe, use_mpi, frequency)
-    wrapper.run()
 
 
 @cli.command(name='pyborg')
