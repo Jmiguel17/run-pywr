@@ -99,11 +99,12 @@ IndexVariableParameter.register()
 
 class IrrigationWaterRequirementParameter(Parameter):
     """Simple irrigation water requirement model. """
-    def __init__(self, model, rainfall_parameter, et_parameter, crop_water_factor_parameter, area, reference_et, yield_per_area, factor=1e6, 
-                revenue_per_yield=1, application_efficiency=0.8, conveyance_efficiency=0.7, et_factor=0.001, area_factor=10000, **kwargs):
+    def __init__(self, model, rainfall_parameter, et_parameter, crop_water_factor_parameter, area, reference_et, yield_per_area, conveyance_efficiency, application_efficiency, 
+                 factor=1e6, revenue_per_yield=1,  et_factor=0.001, area_factor=10000, **kwargs):
 
         super().__init__(model, **kwargs)
 
+        self._area = None
         self.area = area
         self.factor = factor
         self.et_factor = et_factor
@@ -116,36 +117,43 @@ class IrrigationWaterRequirementParameter(Parameter):
         self._crop_water_factor_parameter = None
         self.revenue_per_yield = revenue_per_yield
         self.rainfall_parameter = rainfall_parameter
+        self._conveyance_efficiency = None
         self.conveyance_efficiency = conveyance_efficiency
+        self._application_efficiency = None
         self.application_efficiency = application_efficiency
         self.crop_water_factor_parameter = crop_water_factor_parameter
 
     et_parameter = parameter_property("_et_parameter")
     rainfall_parameter = parameter_property("_rainfall_parameter")
     crop_water_factor_parameter = parameter_property("_crop_water_factor_parameter")
+    conveyance_efficiency = parameter_property("_conveyance_efficiency")
+    application_efficiency = parameter_property("_application_efficiency")
+    area = parameter_property("_area")
 
     def value(self, timestep, scenario_index):
 
         et = self.et_parameter.get_value(scenario_index) * self.et_factor
         effective_rainfall = self.rainfall_parameter.get_value(scenario_index) * self.et_factor
         crop_water_factor = self.crop_water_factor_parameter.get_value(scenario_index)
+        conv_efficiency = self.conveyance_efficiency.get_value(scenario_index)
+        app_efficiency = self.application_efficiency.get_value(scenario_index)
+        area_ = self.area.get_value(scenario_index)
       
         # Calculate crop water requirement
-
         if effective_rainfall > crop_water_factor * et:
             # No crop water requirement if there is enough rainfall
             crop_water_requirement = 0.0
         else:
             # Irrigation required to meet shortfall in rainfall
             
-            crop_water_requirement = (crop_water_factor * et - effective_rainfall) * (self.area * self.area_factor)
+            crop_water_requirement = (crop_water_factor * et - effective_rainfall) * (area_ * self.area_factor)
 
         # Calculate overall efficiency
-        efficiency = self.application_efficiency * self.conveyance_efficiency
+        efficiency = app_efficiency * conv_efficiency
 
         # TODO error checking on division by zero
         irrigation_water_requirement = crop_water_requirement / efficiency
-
+        
         return irrigation_water_requirement/self.factor #To have Mm3/day
 
     def crop_yield(self, curtailment_ratio):
@@ -161,7 +169,18 @@ class IrrigationWaterRequirementParameter(Parameter):
         et_parameter = load_parameter(model, data.pop('et_parameter'))
         cwf_parameter = load_parameter(model, data.pop('crop_water_factor_parameter'))
 
-        return cls(model, rainfall_parameter, et_parameter, cwf_parameter, **data)
+        attribute_list = ["conveyance_efficiency", "application_efficiency", "area", "reference_et", "yield_per_area"]
+        attributes = {}
+
+        for attribute in attribute_list:
+            if attribute in data:
+                if isinstance(data[attribute], (int, float)):
+                    attributes[attribute] = data.pop(attribute)
+                else:
+                    attributes[attribute] = load_parameter(model, data.pop(attribute))
+
+        return cls(model, rainfall_parameter, et_parameter, cwf_parameter, attributes["area"], attributes["reference_et"], 
+                   attributes["yield_per_area"], attributes["conveyance_efficiency"], attributes["application_efficiency"], **data)
 
 
 IrrigationWaterRequirementParameter.register()
@@ -316,6 +335,7 @@ class TransientDecisionParameter(Parameter):
         after_parameter = load_parameter(model, data.pop('after_parameter'))
 
         return cls(model, before_parameter=before_parameter, after_parameter=after_parameter, **data)
+        
         
 TransientDecisionParameter.register()
 

@@ -24,6 +24,10 @@ warnings.filterwarnings("ignore", category=FutureWarning, message=".*'M' is depr
 import logging
 logger = logging.getLogger(__name__)
 
+def get_random_seed():
+    import random
+    return random.randint(2, 2**20-1)
+
 @click.group()
 @click.option('--debug/--no-debug', default=False)
 def cli(debug):
@@ -150,7 +154,8 @@ def pyborg(filename, seed, use_mpi, max_nfe, frequency, islands):
     output_directory = os.path.join(directory, 'outputs')
 
     if seed is None:
-        seed = random.randrange(sys.maxsize)
+        seed = get_random_seed()
+        random.seed(seed)
 
     if seed is not None:
         random.seed(seed)

@@ -596,7 +596,9 @@ class ReservoirResilienceRecorder(NumpyArrayAbstractStorageRecorder):
 
         resilience = {}
         
-        for idx, dataframe in tem_dams_occurrence.groupby(level=[0,1,2,3,4], axis=1):
+        levels = [x for x, _ in enumerate(tem_dams_occurrence.columns.names)]
+        
+        for idx, dataframe in tem_dams_occurrence.groupby(level=levels, axis=1):
             
             tem = dataframe.T.reset_index(drop=True).T
             
