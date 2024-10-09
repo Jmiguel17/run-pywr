@@ -138,6 +138,78 @@ def run(filename):
         rec_to_csv.to_csv(os.path.join(output_directory, f"{base}_recorders.csv"))
 
 
+@cli.command(name='run_simulation')
+@click.argument('filename', type=click.Path(file_okay=True, dir_okay=False, exists=True))
+def run_simulation(filename):
+    """
+    This method is used to run a pywr model and saving all the extra recorders/metrics we normally use in projects we have with The World Bank.
+    """
+
+    logger.info('Loading model from file: "{}"'.format(filename))
+    model = Model.load(filename, solver='glpk')
+
+    # Silence Warnings
+    warnings.filterwarnings('ignore', category=tables.NaturalNameWarning)
+    warnings.filterwarnings("ignore", category=FutureWarning, message=".*Resampling with a PeriodIndex is deprecated.*")
+    warnings.filterwarnings("ignore", category=FutureWarning, message=".*'AS' is deprecated and will be removed in a future version, please use 'YS' instead.*")
+    warnings.filterwarnings("ignore", category=FutureWarning, message=".*DataFrame.groupby with axis=1 is deprecated.*")
+    
+    ProgressRecorder(model)
+
+    base, ext = os.path.splitext(filename)
+    output_directory = os.path.join(base, "outputs")
+
+    os.makedirs(os.path.join(output_directory), exist_ok=True)
+
+    # Save DataFrame recorders
+    store_metrics = pd.HDFStore(os.path.join(output_directory, f"{base}_metrics.h5"), mode='w')
+    store_recorders = pd.HDFStore(os.path.join(output_directory, f"{base}_recorders.h5"), mode='w')
+    store_aggreated = pd.HDFStore(os.path.join(output_directory, f"{base}_aggregated.h5"), mode='w')
+
+    logger.info('Starting model run.')
+    ret = model.run()
+    logger.info(ret)
+    print(ret.to_dataframe())
+
+    for rec in model.recorders:
+            
+        if hasattr(rec, 'to_dataframe') and 'recorder' in rec.name:
+            df = rec.to_dataframe()
+            store_recorders[rec.name] = df.resample('M').mean()
+
+        try:
+            if 'Aggregated' in rec.name:
+                values = np.array(rec.values())
+
+        except NotImplementedError:
+            pass
+        
+        else:
+            if 'Aggregated' in rec.name:
+                store_aggreated[rec.name] = pd.Series(values)
+    
+    store_recorders.close()
+    store_aggreated.close()
+
+    for rec in model.recorders:
+
+        try:
+            if 'Reliability' in rec.name or 'Resilience' in rec.name or 'Annual Deficit' in rec.name:
+                values = rec.values()
+
+        except NotImplementedError:
+            pass
+        
+        else:
+            if 'Reliability' in rec.name or 'Resilience' in rec.name or 'Annual Deficit' in rec.name:
+                try:
+                    store_metrics[f"{rec.name}"] = values
+                except Exception as excp:
+                    logger.error(f"Error in saving data  in store_metrics:\n rec.name: {rec.name}.")
+
+    store_metrics.close()
+
+
 @cli.command(name='pyborg')
 @click.argument('filename', type=click.Path(file_okay=True, dir_okay=False, exists=True))
 @click.option('-s', '--seed', type=int, default=None)

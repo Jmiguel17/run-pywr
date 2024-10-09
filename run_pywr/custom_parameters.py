@@ -516,3 +516,428 @@ RollingNodeFlowRecorder.register()
 
         
 #IndexedArrayParameter.register()
+
+# ==============================================================================
+# From here some parameters created by Mikiyas for the Incomati Basin model
+# ==============================================================================
+class Domestic_deamnd_projection_parameter(Parameter):
+    """ A parameter triggers the maxmium hydropower capacity of a planned taking trigger year as an input
+    ----------
+    """
+    def __init__(self, model, Annual_increase_in_percent, **kwargs):
+        super().__init__(model, **kwargs)
+        self.Annual_increase_in_percent = Annual_increase_in_percent
+        
+    def setup(self):
+        super().setup()
+        ncomb = len(self.model.scenarios.combinations)
+        nts = len(self.model.timestepper)
+        
+    def value(self, timestep, scenario_index):    
+        
+        ts_start_year = self.model.timestepper.start.year
+        ts_year=self.model.timestepper.current.year
+        year_diff = ts_year - ts_start_year
+        projected_demand_factor = self.Annual_increase_in_percent**year_diff
+        return projected_demand_factor
+        
+    @classmethod
+    def load(cls, model, data):
+        Annual_increase_in_percent = data.pop("Annual_increase_in_percent")
+    
+        return cls(model, Annual_increase_in_percent, **data)
+    
+Domestic_deamnd_projection_parameter.register()
+
+
+class Demand_informed_release_Driekoppies(Parameter):
+    """ A parameter triggers the maxmium hydropower capacity of a planned taking trigger year as an input
+    ----------
+    """
+    def __init__(self, model, demand_nodes, DS_Komati_Lomati, Maguga, Driekoppies, Buffer_volume_Driekoppies, Buffer_volume_Maguga, Demand_storage_Maguga, Demand_storage_Driekoppies, **kwargs):
+        super().__init__(model, **kwargs)
+        self.demand_nodes = demand_nodes
+        self.DS_Komati_Lomati = DS_Komati_Lomati        
+        
+        self.Demand_storage_Maguga = Demand_storage_Maguga
+        self.Demand_storage_Driekoppies = Demand_storage_Driekoppies 
+        self.Maguga =  Maguga
+        self.Driekoppies = Driekoppies
+        self.Buffer_volume_Driekoppies = Buffer_volume_Driekoppies 
+        self.Buffer_volume_Maguga = Buffer_volume_Maguga 
+
+    def setup(self):
+        super().setup()
+
+    def value(self, ts, scenario_index):
+        
+        ts = self.model.timestepper.current
+        Buffer_volume_Driekoppies = self.Buffer_volume_Driekoppies.value(ts, scenario_index) 
+        Buffer_volume_Maguga = self.Buffer_volume_Maguga.value(ts, scenario_index) 
+    
+        Maguga_volume = self.Maguga.volume[scenario_index.global_id]
+        Driekoppies_volume = self.Driekoppies.volume[scenario_index.global_id]
+
+        if ts.index == 0:
+            self.Irrigation_us_Driekoppies = ["X14_RR1","X14_RR2","X14_RR3", "X14_RR5","X14_RR6","X14_RR8"]
+            Irrigation_ds_Driekoppies = ["X14_RR5","X14_RR6","X14_RR8"]
+            self.Irrigation_us_Driekoppies_max_flow = {node:load_parameter(self.model, node+".Demand") for node in self.Irrigation_us_Driekoppies} 
+
+
+        #if self.Driekoppies.volume[scenario_index.global_id] < Buffer_volume_Driekoppies:
+        #    for node in self.Irrigation_us_Driekoppies:
+        #        self.model._get_node_from_ref(self.model, node).max_flow = self.Irrigation_us_Driekoppies_max_flow[node].get_value(scenario_index)*0.5
+        #else:
+        #    for node in self.Irrigation_us_Driekoppies:
+        #        self.model._get_node_from_ref(self.model, node).max_flow = self.Irrigation_us_Driekoppies_max_flow[node].get_value(scenario_index)
+
+        demand = [node.get_max_flow(scenario_index) for node in self.demand_nodes]
+        DS_Komati_Lomati = [node.get_max_flow(scenario_index) for node in self.DS_Komati_Lomati]
+
+        #if both Maguga and Driekoppies volume are above the buffer storage volume 
+        if (Maguga_volume > Buffer_volume_Maguga and Driekoppies_volume > Buffer_volume_Driekoppies): 
+            net_storage_Maguga = Maguga_volume - Buffer_volume_Maguga 
+            net_storage_Driekoppies = Driekoppies_volume - Buffer_volume_Driekoppies 
+            Driekoppies_precent_relese = (net_storage_Driekoppies)/(net_storage_Maguga + net_storage_Driekoppies)
+            Driekoppies_precent_relese = 0 if np.isnan(Driekoppies_precent_relese) else Driekoppies_precent_relese
+            release = sum(demand) + sum(DS_Komati_Lomati)*Driekoppies_precent_relese
+
+        elif (Maguga_volume < Buffer_volume_Maguga and Driekoppies_volume < Buffer_volume_Driekoppies):
+            net_storage_Maguga = Maguga_volume - self.Demand_storage_Maguga 
+            net_storage_Driekoppies = Driekoppies_volume - self.Demand_storage_Driekoppies 
+            Driekoppies_precent_relese = (net_storage_Driekoppies)/(net_storage_Maguga + net_storage_Driekoppies)
+            Driekoppies_precent_relese = 0 if np.isnan(Driekoppies_precent_relese) else Driekoppies_precent_relese
+            release = sum(demand) + sum(DS_Komati_Lomati)*Driekoppies_precent_relese
+
+        elif (Maguga_volume < Buffer_volume_Maguga and Driekoppies_volume > Buffer_volume_Driekoppies):
+            release = sum(demand) + sum(DS_Komati_Lomati)
+
+        elif (Maguga_volume > Buffer_volume_Maguga and Driekoppies_volume < Buffer_volume_Driekoppies):
+            release = sum(demand) 
+
+        return release
+
+    @classmethod
+    def load(cls, model, data):
+        demand_nodes = [model._get_node_from_ref(model, node) for node in data.pop("demand_nodes")]
+        DS_Komati_Lomati = [model._get_node_from_ref(model, node) for node in data.pop("DS_Komati_Lomati")]
+
+        Maguga =  model._get_node_from_ref(model, data.pop("Maguga_Dam"))
+        Driekoppies = model._get_node_from_ref(model, data.pop("Driekoppies_Dam"))
+        Demand_storage_Maguga = data.pop("Demand_storage_Maguga")
+        Demand_storage_Driekoppies = data.pop("Demand_storage_Driekoppies")
+
+        Buffer_volume_Driekoppies = load_parameter(model, data.pop("Buffer_volume_Driekoppies"))
+        Buffer_volume_Maguga = load_parameter(model, data.pop("Buffer_volume_Maguga"))
+
+        return cls(model, demand_nodes, DS_Komati_Lomati, Maguga, Driekoppies, Buffer_volume_Driekoppies, Buffer_volume_Maguga, Demand_storage_Maguga, Demand_storage_Driekoppies, **data)
+
+Demand_informed_release_Driekoppies.register()
+
+
+class High_assurance_level(Parameter):
+    """ A parameter triggers the maxmium hydropower capacity of a planned taking trigger year as an input
+    ----------
+    """
+    def __init__(self, model, High_assurance_nodes, **kwargs):
+        super().__init__(model, **kwargs)
+        self.High_assurance_names = High_assurance_nodes 
+        self.High_assurance_nodes = [model._get_node_from_ref(model, node) for node in self.High_assurance_names]
+        
+    def setup(self):
+        super().setup()
+        self.demand = []
+        
+    def probability_exceedance_plot(self, values):
+        # Sort the values in ascending order
+        sorted_values = np.sort(values)
+        # Calculate the exceedance probabilities
+        exceedance_probabilities = np.arange(1, len(sorted_values) + 1) / len(sorted_values)
+        exceedance_probabilities = 1 - exceedance_probabilities
+                # Create the plot
+        plt.figure(figsize=(10, 6))
+        plt.plot(sorted_values, exceedance_probabilities, marker='o', linestyle='-')
+        plt.xlabel('Value')
+        plt.ylabel('Exceedance Probability')
+        plt.title('Probability Exceedance Plot')
+        plt.grid(True)
+        plt.show()
+
+    def after(self):
+        self.max_demand = {node:load_parameter(self.model, node+".Demand") for node in self.High_assurance_names}  
+        agg_demand = []
+        self.max_demand = {node:load_parameter(self.model, node+".Demand") for node in self.High_assurance_names} 
+        for node in self.High_assurance_names:
+            allocated_demand = self.model._get_node_from_ref(self.model, node)
+            potential_demand = self.max_demand[node].get_value(self.scenario_id) 
+            
+            agg_demand.append(potential_demand - allocated_demand.flow[self.scenario_id.global_id])
+
+        self.demand.append(sum(agg_demand))
+
+        if not self.ts.year % 10 and self.ts.month == 12 and self.ts.day == 31:
+            #self.probability_exceedance_plot(self.demand)
+            pass
+
+        return 0
+
+    def value(self, ts, scenario_index):
+        
+        ts = self.model.timestepper.current
+        self.ts = ts
+        self.scenario_id = scenario_index
+
+        agg_demand = []
+        self.max_demand = {node:load_parameter(self.model, node+".Demand") for node in self.High_assurance_names} 
+        for node in self.High_assurance_names:
+            allocated_demand = self.model._get_node_from_ref(self.model, node)
+            potential_demand = self.max_demand[node].get_value(scenario_index) 
+            
+            agg_demand.append(potential_demand - allocated_demand.prev_flow[scenario_index.global_id])
+
+        """
+        self.demand.append(sum(agg_demand))
+
+        if ts.year % 3 and ts.month == 12:
+            self.probability_exceedance_plot(self.demand)
+        """
+        return 0
+
+    @classmethod
+    def load(cls, model, data):
+        High_assurance_nodes = data.pop("High_assurance_nodes")
+        return cls(model, High_assurance_nodes, **data)
+
+High_assurance_level.register()
+
+
+class Low_assurance_level(Parameter):
+    """ A parameter triggers the maxmium hydropower capacity of a planned taking trigger year as an input
+    ----------
+    """
+    def __init__(self, model, High_assurance_nodes, **kwargs):
+        super().__init__(model, **kwargs)
+        self.High_assurance_names = High_assurance_nodes 
+        self.High_assurance_nodes = {node: model._get_node_from_ref(model, node) for node in self.High_assurance_names}
+        
+    def setup(self):
+        super().setup()
+        self.allocated_demand = 0
+        self.potential_demand = {node: 0 for node in self.High_assurance_names}
+        self.demand = []
+        self.max_demand = {node:load_parameter(self.model, node+".Demand") for node in self.High_assurance_names} 
+
+    def probability_exceedance_plot(self, values):
+        # Sort the values in ascending order
+        sorted_values = np.sort(values)
+        # Calculate the exceedance probabilities
+        exceedance_probabilities = np.arange(1, len(sorted_values) + 1) / len(sorted_values)
+        exceedance_probabilities = 1 - exceedance_probabilities
+        # Create the plot
+        plt.figure(figsize=(10, 6))
+        plt.plot(sorted_values, exceedance_probabilities, marker='o', linestyle='-')
+        plt.xlabel('Value')
+        plt.ylabel('Exceedance Probability')
+        plt.title('Probability Exceedance Plot')
+        plt.grid(True)
+        plt.show()
+
+    def value(self, ts, scenario_index):
+        
+        ts = self.model.timestepper.current
+        self.ts = ts
+        self.scenario_id = scenario_index
+
+        agg_demand = []
+
+        for node in self.High_assurance_names:
+            self.allocated_demand = self.model._get_node_from_ref(self.model, node)
+            agg_demand.append(self.potential_demand[node] - self.allocated_demand.prev_flow[scenario_index.global_id])
+            self.potential_demand[node] = self.max_demand[node].get_value(scenario_index) 
+
+        if not ts.index == 0:
+            self.demand.append(sum(agg_demand))
+
+
+        if not self.ts.year % 5 and self.ts.month == 12 and self.ts.day == 31:
+            #self.probability_exceedance_plot(self.demand)
+            pass
+            
+        return 0
+
+    @classmethod
+    def load(cls, model, data):
+        High_assurance_nodes = data.pop("High_assurance_nodes")
+        return cls(model, High_assurance_nodes, **data)
+
+Low_assurance_level.register()
+
+
+class Simple_Irr_demand_calculator_with_file(Parameter):
+    """ A parameter triggers the maxmium hydropower capacity of a planned taking trigger year as an input
+    ----------
+    """
+    def __init__(self, model, evaporation,rainfall_factor,IRR_exp,IRR_eff,crop_ET,crop_area,Max_area,rainfall,index_col, **kwargs):
+        super().__init__(model, **kwargs)
+        self.evaporation = [x/30 for x in evaporation]
+        self.rainfall_factor = rainfall_factor
+        self.IRR_exp = IRR_exp
+        self.IRR_eff = IRR_eff
+        self.crop_ET = crop_ET
+        self.crop_area = crop_area
+        self.Max_area = Max_area
+        self.rainfall_ = rainfall
+        self.index_col=index_col
+        
+    def setup(self):
+        super().setup()
+        ncomb = len(self.model.scenarios.combinations)
+        nts = len(self.model.timestepper)
+        self.rainfall_=pd.read_hdf(self.rainfall_)
+        
+    def value(self, timestep, scenario_index):    
+        
+        ts = self.model.timestepper.current
+        month=ts.month
+        year=ts.year
+        self.rainfall=self.rainfall_[self.index_col][str(year)+"_"+str(month)]/ts.day
+        
+        rainfall_factor=self.rainfall_factor
+                
+        evaporation=self.evaporation[month-1]
+        Total_Irr_demand=0
+        for x in self.crop_ET.keys():
+            if x in self.crop_area.keys():
+                Net_demand=max((self.crop_ET[x][month-1]*evaporation-rainfall_factor[month-1]*self.rainfall),0)
+                Irr_eff=1+(1-0.80)
+                Irr_demand=Net_demand*(self.crop_area[x]*0.01*1.05)*self.Max_area*Irr_eff * 1e6 * 1e-3 * 1e-6
+                
+                Total_Irr_demand+=Irr_demand
+        return Total_Irr_demand
+        
+    @classmethod
+    def load(cls, model, data):
+        evaporation = data.pop("evaporation")
+        rainfall_factor = data.pop("rainfall_factor")
+        IRR_exp = data.pop("IRR_exp")
+        IRR_eff = data.pop("IRR_eff")
+        crop_ET = data.pop("crop_ET")
+        crop_area = data.pop("crop_area")
+        Max_area = data.pop("Max_area")
+        rainfall = data.pop("rainfall")
+        index_col=data.pop("index_col")
+        
+        return cls(model, evaporation,rainfall_factor,IRR_exp,IRR_eff,crop_ET,crop_area,Max_area,rainfall, index_col,**data)
+
+Simple_Irr_demand_calculator_with_file.register()
+
+
+class Demand_informed_release_Maguga(Parameter):
+    """ A parameter triggers the maxmium hydropower capacity of a planned taking trigger year as an input
+    ----------
+    """
+    def __init__(self, model, demand_nodes, DS_Komati_Lomati, Maguga, Driekoppies, Buffer_volume_Driekoppies, Buffer_volume_Maguga, Demand_storage_Maguga, Demand_storage_Driekoppies, Maguga_hydropower_release_m3_s, Maguga_hydropower_operation_hours_per_week, **kwargs):
+        super().__init__(model, **kwargs)
+        self.demand_nodes = demand_nodes
+        self.DS_Komati_Lomati = DS_Komati_Lomati
+        self.Demand_storage_Maguga = Demand_storage_Maguga
+        self.Demand_storage_Driekoppies = Demand_storage_Driekoppies 
+        self.Maguga =  Maguga
+        self.Driekoppies = Driekoppies
+        self.Buffer_volume_Driekoppies = Buffer_volume_Driekoppies 
+        self.Buffer_volume_Maguga = Buffer_volume_Maguga 
+
+        self.Maguga_hydropower_release_m3_s = Maguga_hydropower_release_m3_s
+        self.Maguga_hydropower_operation_hours_per_week = Maguga_hydropower_operation_hours_per_week 
+
+    def setup(self):
+        super().setup()
+        self.Irrigation_us_Maguga = ["X11_RR3","X11_RR4","X11_RR16","X11_RR7","X11_RR9","X11_RR11","X11_RR13","X12_RR12","X12_RR13","X12_RR9","X12_RR7","X13_RR1","X13_RR3","X13_RR5","X13_RR7","X13_RR12","X13_RR2"]
+        self.Irrigation_us_Maguga_max_flow = {node:load_parameter(self.model, node+".Demand") for node in self.Irrigation_us_Maguga} 
+        self.peak_hours_relese = self.Maguga_hydropower_release_m3_s["peak_hours_relese"] 
+        self.standard_hours_generation = self.Maguga_hydropower_release_m3_s["standard_hours_generation"] 
+        self.off_peak_hours_relese = self.Maguga_hydropower_release_m3_s["off_peak_hours_relese"] 
+
+        self.peak_hours = load_parameter(self.model, self.Maguga_hydropower_operation_hours_per_week["peak_hours"])
+        self.standard_hours = load_parameter(self.model, self.Maguga_hydropower_operation_hours_per_week["standard_hours"])
+        
+    def value(self, ts, scenario_index):
+        
+        ts = self.model.timestepper.current
+        
+        self.peak_hour = self.peak_hours.get_value(scenario_index)
+        self.standard_hour = self.standard_hours.get_value(scenario_index)
+        self.off_peak_hour = 168 - self.peak_hour - self.standard_hour
+
+        factor = 3600/7e6
+        self.hydro_release = (self.peak_hour*self.peak_hours_relese + self.standard_hour*self.standard_hours_generation + self.off_peak_hour*self.off_peak_hours_relese)*factor
+
+
+        Buffer_volume_Driekoppies = self.Buffer_volume_Driekoppies.value(ts, scenario_index) 
+        Buffer_volume_Maguga = self.Buffer_volume_Maguga.value(ts, scenario_index) 
+        Maguga_volume = self.Maguga.volume[scenario_index.global_id]
+        Driekoppies_volume = self.Driekoppies.volume[scenario_index.global_id]
+
+
+        if self.Maguga.volume[scenario_index.global_id] < Buffer_volume_Maguga:
+            for node in self.Irrigation_us_Maguga:
+                self.model._get_node_from_ref(self.model, node).max_flow = self.Irrigation_us_Maguga_max_flow[node].get_value(scenario_index)
+        else:
+            for node in self.Irrigation_us_Maguga:
+                self.model._get_node_from_ref(self.model, node).max_flow = self.Irrigation_us_Maguga_max_flow[node].get_value(scenario_index)
+
+        #Todo
+        # 1. identfy the hydropwoer requirment as an input parameter. this could be the montly required release based on the Peak, Standard and __
+        # 2. compaire the downstream release with the hydropower demand and if the hydropower release is above the demand, adjust the release 
+        # 3. make sure that the demand is satisfied unless there is no water in the reservoir.
+        # 4. make sure that the release form the reservoir should consider the spill from the reservoir
+
+
+        demand = [node.get_max_flow(scenario_index) for node in self.demand_nodes]
+        DS_Komati_Lomati = [node.get_max_flow(scenario_index) for node in self.DS_Komati_Lomati]
+        #if both Maguga and Driekoppies volume are above the buffer storage volume
+        Maguga_precent_relese = 0 
+        if (Maguga_volume > Buffer_volume_Maguga and Driekoppies_volume > Buffer_volume_Driekoppies): 
+            net_storage_maguga = Maguga_volume - Buffer_volume_Maguga 
+            net_storage_Driekoppies = Driekoppies_volume - Buffer_volume_Driekoppies 
+            Maguga_precent_relese = (net_storage_maguga)/(net_storage_maguga + net_storage_Driekoppies)
+            Maguga_precent_relese = 0 if np.isnan(Maguga_precent_relese) else Maguga_precent_relese
+            release = sum(demand) + sum(DS_Komati_Lomati)*Maguga_precent_relese
+
+        elif (Maguga_volume < Buffer_volume_Maguga and Driekoppies_volume < Buffer_volume_Driekoppies):
+            net_storage_maguga = Maguga_volume - self.Demand_storage_Maguga 
+            net_storage_Driekoppies = Driekoppies_volume - self.Demand_storage_Driekoppies 
+            Maguga_precent_relese = (net_storage_maguga)/(net_storage_maguga + net_storage_Driekoppies)
+            Maguga_precent_relese = 0 if np.isnan(Maguga_precent_relese) else Maguga_precent_relese
+            release = sum(demand) + sum(DS_Komati_Lomati)*Maguga_precent_relese
+
+        elif (Maguga_volume > Buffer_volume_Maguga and Driekoppies_volume < Buffer_volume_Driekoppies):
+            release = sum(demand) + sum(DS_Komati_Lomati)
+
+        elif (Maguga_volume < Buffer_volume_Maguga and Driekoppies_volume > Buffer_volume_Driekoppies):
+            release = sum(demand) 
+     
+        # release for hydropower  
+        if release < self.hydro_release:
+            release = self.hydro_release
+
+        return release
+
+    @classmethod
+    def load(cls, model, data):
+        demand_nodes = [model._get_node_from_ref(model, node) for node in data.pop("demand_nodes")]
+        DS_Komati_Lomati = [model._get_node_from_ref(model, node) for node in data.pop("DS_Komati_Lomati")]
+        Maguga =  model._get_node_from_ref(model, data.pop("Maguga_Dam"))
+        Driekoppies = model._get_node_from_ref(model, data.pop("Driekoppies_Dam"))
+        Demand_storage_Maguga = data.pop("Demand_storage_Maguga")
+        Demand_storage_Driekoppies = data.pop("Demand_storage_Driekoppies")
+
+        Buffer_volume_Driekoppies = load_parameter(model, data.pop("Buffer_volume_Driekoppies"))
+        Buffer_volume_Maguga = load_parameter(model, data.pop("Buffer_volume_Maguga"))
+
+        Maguga_hydropower_release_m3_s = data.pop("Maguga_hydropower_release_m3_s")
+        Maguga_hydropower_operation_hours_per_week = data.pop("Maguga_hydropower_operation_hours_per_week")
+
+        return cls(model, demand_nodes, DS_Komati_Lomati, Maguga, Driekoppies, Buffer_volume_Driekoppies, Buffer_volume_Maguga, Demand_storage_Maguga, Demand_storage_Driekoppies, Maguga_hydropower_release_m3_s, Maguga_hydropower_operation_hours_per_week, **data)
+
+Demand_informed_release_Maguga.register()
