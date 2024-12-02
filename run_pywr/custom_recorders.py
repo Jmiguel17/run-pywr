@@ -3,7 +3,7 @@ import sys
 import numpy as np
 import pandas as pd
 
-#from pywr.parameters import load_parameter
+from pywr.parameters import load_parameter
 from pywr.recorders import NumpyArrayNodeRecorder, NodeRecorder, Aggregator, NumpyArrayStorageRecorder, NumpyArrayAbstractStorageRecorder, Recorder
 
 class NumpyArrayAnnualNodeDeficitFrequencyRecorder(NodeRecorder):
@@ -471,7 +471,9 @@ class SupplyReliabilityRecorder(NodeRecorder):
         index = self.model.timestepper.datetime_index
         sc_index = self.model.scenarios.multiindex
 
-        DataFrame = pd.DataFrame(np.array(self._data), index=index, columns=sc_index).resample('M').max()
+        last_year = index[-1].year
+
+        DataFrame = pd.DataFrame(np.array(self._data), index=index, columns=sc_index).resample('M').max().loc[:str(last_year), :]
 
         return 1 - ((DataFrame.sum().round(0) / DataFrame.shape[0]))
     
@@ -486,7 +488,7 @@ SupplyReliabilityRecorder.register()
 class AnnualDeficitRecorder(NodeRecorder):
 
     """
-    add description
+    Annual deficit recorder (%)
     """
 
     def __init__(self, model, node, **kwargs):
@@ -522,8 +524,10 @@ class AnnualDeficitRecorder(NodeRecorder):
         index = self.model.timestepper.datetime_index
         sc_index = self.model.scenarios.multiindex
 
-        supply = pd.DataFrame(np.array(self._supply), index=index, columns=sc_index).resample('Y').sum()
-        demand = pd.DataFrame(np.array(self._demand), index=index, columns=sc_index).resample('Y').sum()
+        last_year = index[-1].year
+
+        supply = pd.DataFrame(np.array(self._supply), index=index, columns=sc_index).resample('Y').sum().loc[:str(last_year), :]
+        demand = pd.DataFrame(np.array(self._demand), index=index, columns=sc_index).resample('Y').sum().loc[:str(last_year), :]
 
         rlts = 1 - supply.divide(demand)
 
@@ -720,3 +724,335 @@ class RelativeCropYieldRecorder(Recorder):
         return cls(model, nodes, **data)
 
 RelativeCropYieldRecorder.register()
+
+
+class AverageAnnualCropYieldScenarioRecorder(NodeRecorder):
+
+    """
+    This recorder computes the average annual crop yield for each scenario based on the curtailment ratio between a node's
+    """
+
+    def __init__(self, model, node, threshold=None, **kwargs):
+        
+        super().__init__(model, node, **kwargs)
+        self.threshold = threshold
+
+    def setup(self):
+        ncomb = len(self.model.scenarios.combinations)
+        nts = len(self.model.timestepper)
+
+        self._supply = np.zeros((nts, ncomb))
+        self._demand = np.zeros((nts, ncomb))
+        self._area = np.zeros((nts, ncomb))
+
+    def reset(self):
+        self._supply[:, :] = 0.0
+        self._demand[:, :] = 0.0
+
+    def after(self):
+        ts = self.model.timestepper.current
+        node = self.node
+
+        for scenario_index in self.model.scenarios.combinations:
+
+            self._supply[ts.index, scenario_index.global_id] = node.flow[scenario_index.global_id]
+            self._demand[ts.index, scenario_index.global_id] = node.get_max_flow(scenario_index)
+
+        return 0
+
+    def to_dataframe(self):
+        
+        raise NotImplementedError()
+
+
+    def values(self):
+        
+        max_flow_param = self.node.max_flow
+
+        areas = []
+        for scenario_index in self.model.scenarios.combinations:
+            areas.append(max_flow_param.area.get_value(scenario_index))
+        
+        index = self.model.timestepper.datetime_index
+        sc_index = self.model.scenarios.multiindex
+
+        last_year = index[-1].year
+
+        supply = pd.DataFrame(np.array(self._supply), index=index, columns=sc_index).resample('Y').sum().loc[:str(last_year), :]
+        demand = pd.DataFrame(np.array(self._demand), index=index, columns=sc_index).resample('Y').sum().loc[:str(last_year), :]
+
+        curtailment_ratio = supply.divide(demand)
+        curtailment_ratio.replace([np.inf, -np.inf], 0, inplace=True) # Replace inf with 0
+
+        areas = pd.Series(np.array(areas), index=sc_index)
+
+        crop_yield = curtailment_ratio.multiply(areas, axis=1).multiply(max_flow_param.yield_per_area, axis=0)
+
+
+        return crop_yield.mean(axis=0)
+
+
+AverageAnnualCropYieldScenarioRecorder.register()
+
+
+class TotalAnnualCropYieldScenarioRecorder(NodeRecorder):
+
+    """
+    This recorder computes the Total annual crop yield for each scenario assuming there is anough water to irrigate the crop
+    """
+
+    def __init__(self, model, node, threshold=None, **kwargs):
+        
+        super().__init__(model, node, **kwargs)
+        self.threshold = threshold
+
+    def setup(self):
+        ncomb = len(self.model.scenarios.combinations)
+        nts = len(self.model.timestepper)
+
+        self._supply = np.zeros((nts, ncomb))
+        self._demand = np.zeros((nts, ncomb))
+
+    def reset(self):
+        self._supply[:, :] = 0.0
+        self._demand[:, :] = 0.0
+
+    def after(self):
+        ts = self.model.timestepper.current
+        node = self.node
+
+        for scenario_index in self.model.scenarios.combinations:
+
+            self._supply[ts.index, scenario_index.global_id] = node.flow[scenario_index.global_id]
+            self._demand[ts.index, scenario_index.global_id] = node.get_max_flow(scenario_index)
+
+        return 0
+
+    def to_dataframe(self):
+        
+        raise NotImplementedError()
+
+
+    def values(self):
+        
+        max_flow_param = self.node.max_flow
+
+        areas = []
+
+        for scenario_index in self.model.scenarios.combinations:
+            areas.append(max_flow_param.area.get_value(scenario_index))
+        
+        index = self.model.timestepper.datetime_index
+        sc_index = self.model.scenarios.multiindex
+
+        last_year = index[-1].year
+
+        #supply = pd.DataFrame(np.array(self._supply), index=index, columns=sc_index).resample('Y').sum().loc[:str(last_year), :]
+        demand = pd.DataFrame(np.array(self._demand), index=index, columns=sc_index).resample('Y').sum().loc[:str(last_year), :]
+
+        curtailment_ratio = demand.divide(demand)
+        curtailment_ratio.replace([np.inf, -np.inf], 0, inplace=True) # Replace inf with 0
+
+        areas = pd.Series(np.array(areas), index=sc_index)
+
+        crop_yield = curtailment_ratio.multiply(areas, axis=1).multiply(max_flow_param.yield_per_area, axis=0)
+
+        return crop_yield.mean(axis=0)
+
+
+TotalAnnualCropYieldScenarioRecorder.register()
+
+
+class IrrigationSupplyReliabilityScenarioRecorder(NodeRecorder):
+
+    """
+    This recorder calculates the supply reliability of an irrigation node considering only the months with higher demand 
+    based on the Kc parameter. 
+    
+    A month with high demand > 0.8 Kc
+    A year is considered that fails if the supply is less than 80% of the demand in any of the months with higher demand
+    The supply reliability is calculated as (1 - ((number of years of failure / number of years in the simulation)))
+    """
+
+    def __init__(self, model, node, threshold=None, **kwargs):
+        
+        super().__init__(model, node, **kwargs)
+        self.threshold = threshold
+
+    def setup(self):
+        ncomb = len(self.model.scenarios.combinations)
+        nts = len(self.model.timestepper)
+
+        self._supply = np.zeros((nts, ncomb))
+        self._demand = np.zeros((nts, ncomb))
+        self._kc = np.zeros((nts, ncomb))
+
+    def reset(self):
+        self._supply[:, :] = 0.0
+        self._demand[:, :] = 0.0
+        self._kc[:, :] = 0.0
+
+    def after(self):
+        ts = self.model.timestepper.current
+        node = self.node
+        max_flow_param = self.node.max_flow
+
+        for scenario_index in self.model.scenarios.combinations:
+
+            self._supply[ts.index, scenario_index.global_id] = node.flow[scenario_index.global_id]
+            self._demand[ts.index, scenario_index.global_id] = node.get_max_flow(scenario_index)
+            self._kc[ts.index, scenario_index.global_id] = max_flow_param.crop_water_factor_parameter.get_value(scenario_index)
+
+        return 0
+
+    def to_dataframe(self):
+        
+        raise NotImplementedError()
+
+
+    def values(self):
+        
+        index = self.model.timestepper.datetime_index
+        sc_index = self.model.scenarios.multiindex
+
+        last_year = index[-1].year
+
+        supply = pd.DataFrame(np.array(self._supply), index=index, columns=sc_index).resample('M').sum().loc[:str(last_year), :]
+        demand = pd.DataFrame(np.array(self._demand), index=index, columns=sc_index).resample('M').sum().loc[:str(last_year), :]
+
+        # Here we calculate the months where the demand is higher than 0.8 Kc
+        mths_kc = np.where(self._kc < np.max(self._kc)*0.8, 0, 1)
+        mths_kc = pd.DataFrame(mths_kc, index=index, columns=sc_index).resample('M').mean().loc[:str(last_year), :]
+
+        moths_failures = np.where(supply < demand*self.threshold, 1, 0)
+        moths_failures = pd.DataFrame(moths_failures, index=demand.index, columns=demand.columns)
+
+        # Here we calculate the years where there is a failure only considering the months with high demand "mths_kc"
+        failures = moths_failures.multiply(mths_kc).dropna().resample('Y').max()
+
+
+        return 1 - (failures.sum().round(0) / failures.shape[0])
+
+
+IrrigationSupplyReliabilityScenarioRecorder.register()
+
+
+class CropCurtailmentRatioScenarioRecorder(NodeRecorder):
+
+    """
+    This recorder save the Annual Curtailment Ratios
+    """
+
+    def __init__(self, model, node, threshold=None, **kwargs):
+        
+        super().__init__(model, node, **kwargs)
+        self.threshold = threshold
+
+    def setup(self):
+        ncomb = len(self.model.scenarios.combinations)
+        nts = len(self.model.timestepper)
+
+        self._supply = np.zeros((nts, ncomb))
+        self._demand = np.zeros((nts, ncomb))
+
+    def reset(self):
+        self._supply[:, :] = 0.0
+        self._demand[:, :] = 0.0
+
+    def after(self):
+        ts = self.model.timestepper.current
+        node = self.node
+
+        for scenario_index in self.model.scenarios.combinations:
+
+            self._supply[ts.index, scenario_index.global_id] = node.flow[scenario_index.global_id]
+            self._demand[ts.index, scenario_index.global_id] = node.get_max_flow(scenario_index)
+
+        return 0
+
+    def to_dataframe(self):
+
+        index = self.model.timestepper.datetime_index
+        sc_index = self.model.scenarios.multiindex
+
+        last_year = index[-1].year
+
+        supply = pd.DataFrame(np.array(self._supply), index=index, columns=sc_index).resample('Y').sum().loc[:str(last_year), :]
+        demand = pd.DataFrame(np.array(self._demand), index=index, columns=sc_index).resample('Y').sum().loc[:str(last_year), :]
+
+        curtailment_ratio = supply.divide(demand)
+        curtailment_ratio.replace([np.inf, -np.inf], 0, inplace=True) # Replace inf with 0
+
+        
+        return curtailment_ratio
+
+
+    def values(self):
+        
+
+        return NotImplementedError()
+
+
+CropCurtailmentRatioScenarioRecorder.register()
+
+
+class AnnualIrrigationSupplyReliabilityScenarioRecorder(NodeRecorder):
+
+    """
+    This recorder calculates the annual supply reliability based on a threashold. 
+
+    A year is considered that fails if the supply is less than a threashold
+    The supply reliability is calculated as (1 - ((number of years of failure / number of years in the simulation)))
+    """
+
+    def __init__(self, model, node, threshold=None, **kwargs):
+        
+        super().__init__(model, node, **kwargs)
+        self.threshold = threshold
+
+    def setup(self):
+        ncomb = len(self.model.scenarios.combinations)
+        nts = len(self.model.timestepper)
+
+        self._supply = np.zeros((nts, ncomb))
+        self._demand = np.zeros((nts, ncomb))
+
+    def reset(self):
+        self._supply[:, :] = 0.0
+        self._demand[:, :] = 0.0
+
+    def after(self):
+        ts = self.model.timestepper.current
+        node = self.node
+
+        for scenario_index in self.model.scenarios.combinations:
+
+            self._supply[ts.index, scenario_index.global_id] = node.flow[scenario_index.global_id]
+            self._demand[ts.index, scenario_index.global_id] = node.get_max_flow(scenario_index)
+
+        return 0
+
+    def to_dataframe(self):
+        
+        raise NotImplementedError()
+
+
+    def values(self):
+        
+        index = self.model.timestepper.datetime_index
+        sc_index = self.model.scenarios.multiindex
+
+        last_year = index[-1].year
+
+        supply = pd.DataFrame(np.array(self._supply), index=index, columns=sc_index).resample('Y').sum().loc[:str(last_year), :]
+        demand = pd.DataFrame(np.array(self._demand), index=index, columns=sc_index).resample('Y').sum().loc[:str(last_year), :]
+
+
+        # Here we calculate the years where there is a failure only considering the threshold
+        failures = np.where(supply < demand*self.threshold, 1, 0)
+        failures = pd.DataFrame(failures, index=demand.index, columns=demand.columns)
+
+        return 1 - (failures.sum().round(0) / failures.shape[0])
+
+
+AnnualIrrigationSupplyReliabilityScenarioRecorder.register()

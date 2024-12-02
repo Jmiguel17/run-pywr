@@ -175,7 +175,13 @@ def run_simulation(filename):
             
         if hasattr(rec, 'to_dataframe') and 'recorder' in rec.name:
             df = rec.to_dataframe()
-            store_recorders[rec.name] = df.resample('M').mean()
+
+            if model.timestepper.freq != df.index.freq:
+                store_recorders[rec.name] = df
+
+            else:
+                last_year = model.timestepper.end.year
+                store_recorders[rec.name] = df.resample('M').mean().loc[:str(last_year),:]
 
         try:
             if 'Aggregated' in rec.name:
@@ -194,14 +200,16 @@ def run_simulation(filename):
     for rec in model.recorders:
 
         try:
-            if 'Reliability' in rec.name or 'Resilience' in rec.name or 'Annual Deficit' in rec.name:
+            if ('Reliability' in rec.name or 'Resilience' in rec.name 
+                or 'Annual Deficit' in rec.name or 'annual crop yield' in rec.name or 'supply reliability' in rec.name):
                 values = rec.values()
 
         except NotImplementedError:
             pass
         
         else:
-            if 'Reliability' in rec.name or 'Resilience' in rec.name or 'Annual Deficit' in rec.name:
+            if ('Reliability' in rec.name or 'Resilience' in rec.name 
+                or 'Annual Deficit' in rec.name or 'annual crop yield' in rec.name or 'supply reliability' in rec.name):
                 try:
                     store_metrics[f"{rec.name}"] = values
                 except Exception as excp:
