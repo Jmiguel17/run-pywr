@@ -99,8 +99,8 @@ IndexVariableParameter.register()
 
 class IrrigationWaterRequirementParameter(Parameter):
     """Simple irrigation water requirement model. """
-    def __init__(self, model, rainfall_parameter, et_parameter, crop_water_factor_parameter, area, reference_et, yield_per_area, conveyance_efficiency, application_efficiency, 
-                 factor=1e6, revenue_per_yield=1,  et_factor=0.001, area_factor=10000, **kwargs):
+    def __init__(self, model, rainfall_parameter, et_parameter, crop_water_factor_parameter, area, reference_et, yield_per_area, application_efficiency, 
+                 conveyance_efficiency=1, factor=1e6, revenue_per_yield=1,  et_factor=0.001, area_factor=10000, **kwargs):
 
         super().__init__(model, **kwargs)
 
