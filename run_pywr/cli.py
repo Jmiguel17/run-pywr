@@ -204,6 +204,20 @@ def run_simulation(filename):
                 or 'Annual Deficit' in rec.name or 'annual crop yield' in rec.name or 'supply reliability' in rec.name):
                 values = rec.values()
 
+            if 'Hydropower Energy [MWh]' in rec.name:
+                sc_index = model.scenarios.multiindex
+                vals_hy = pd.DataFrame(np.array(rec.values()), index=sc_index)
+
+                vals_hy.columns = [''] * len(vals_hy.columns)
+                values_hydropower = vals_hy.divide(31) # Convert to MWh/year
+
+            if 'Hydropower Firm Power [MW]' in rec.name:
+                sc_index = model.scenarios.multiindex
+                vals_pw = pd.DataFrame(np.array(rec.values()), index=sc_index)
+
+                vals_pw.columns = [''] * len(vals_pw.columns)
+                valures_firm_power = vals_pw
+
         except NotImplementedError:
             pass
         
@@ -212,6 +226,18 @@ def run_simulation(filename):
                 or 'Annual Deficit' in rec.name or 'annual crop yield' in rec.name or 'supply reliability' in rec.name):
                 try:
                     store_metrics[f"{rec.name}"] = values
+                except Exception as excp:
+                    logger.error(f"Error in saving data  in store_metrics:\n rec.name: {rec.name}.")
+
+            if 'Hydropower Energy [MWh]' in rec.name:
+                try:
+                    store_metrics[f"{rec.name}"] = values_hydropower
+                except Exception as excp:
+                    logger.error(f"Error in saving data  in store_metrics:\n rec.name: {rec.name}.")
+            
+            if 'Hydropower Firm Power [MW]' in rec.name:
+                try:
+                    store_metrics[f"{rec.name}"] = valures_firm_power
                 except Exception as excp:
                     logger.error(f"Error in saving data  in store_metrics:\n rec.name: {rec.name}.")
 
