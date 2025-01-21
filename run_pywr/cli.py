@@ -180,8 +180,10 @@ def run_simulation(filename):
                 store_recorders[rec.name] = df
 
             else:
-                last_year = model.timestepper.end.year
-                store_recorders[rec.name] = df.resample('M').mean().loc[:str(last_year),:]
+                if 'Hydropower Energy [MWh]' in rec.name:
+                    store_recorders[rec.name] = df.resample('M').mean().multiply(30.42).loc[:str(model.timestepper.end.year),:] # Convert to MWh/month
+                else:
+                    store_recorders[rec.name] = df.resample('M').mean().loc[:str(model.timestepper.end.year),:]
 
         try:
             if 'Aggregated' in rec.name:
@@ -207,9 +209,9 @@ def run_simulation(filename):
             if 'Hydropower Energy [MWh]' in rec.name:
                 sc_index = model.scenarios.multiindex
                 vals_hy = pd.DataFrame(np.array(rec.values()), index=sc_index)
-
                 vals_hy.columns = [''] * len(vals_hy.columns)
-                values_hydropower = vals_hy.divide(31) # Convert to MWh/year
+                number_of_time_steps = (model.timestepper.end - model.timestepper.start)/model.timestepper.freq
+                values_hydropower = vals_hy.divide(number_of_time_steps).multiply(365) # Convert to MWh/year
 
             if 'Hydropower Firm Power [MW]' in rec.name:
                 sc_index = model.scenarios.multiindex
@@ -217,6 +219,18 @@ def run_simulation(filename):
 
                 vals_pw.columns = [''] * len(vals_pw.columns)
                 valures_firm_power = vals_pw
+
+            if 'Volumetric Supply' in rec.name:
+                sc_index = model.scenarios.multiindex
+                start = model.timestepper.start.year
+                end = model.timestepper.end.year
+
+                vals_volumetric = pd.DataFrame(np.array(rec.values()), index=sc_index)
+
+                div = (end - start) + 1
+
+                vals_volumetric.columns = [''] * len(vals_volumetric.columns)
+                values_volumetric = vals_volumetric.divide(div) # Convert to Mm3/year
 
         except NotImplementedError:
             pass
@@ -241,7 +255,188 @@ def run_simulation(filename):
                 except Exception as excp:
                     logger.error(f"Error in saving data  in store_metrics:\n rec.name: {rec.name}.")
 
+            if 'Volumetric Supply' in rec.name:
+                try:
+                    store_metrics[f"{rec.name}"] = values_volumetric
+                except Exception as excp:
+                    logger.error(f"Error in saving data  in store_metrics:\n rec.name: {rec.name}.")
+
     store_metrics.close()
+
+
+@cli.command(name='run_dams_value')
+@click.argument('filename', type=click.Path(file_okay=True, dir_okay=False, exists=True))
+def run_dams_value(filename):
+    """
+    This method is used to run a pywr model for the AmuDary project with the WB
+    """
+
+    logger.info('Loading model from file: "{}"'.format(filename))
+
+    dams_to_modify = {
+        #'All_dams': ['All_dams'],
+        #'Akdarya Dam': ['Akdarya Dam'],
+        #'Aktepin Dam': ['Aktepin Dam'],
+        #'Baipaza Dam': ['Baipaza Dam', 'Baipaza Dam Turbines'],
+        #'Chimkurgan Dam': ['Chimkurgan Dam'],
+        #'Gissarak Dam': ['Gissarak Dam', 'Gissarak Dam Turbines'],
+        #'Golovnaya Dam': ['Golovnaya Dam', 'Golovnaya Turbine'],
+        #'Kamashi Dam': ['Kamashi Dam'],
+        #'Karasuv Dam': ['Karasuv Dam'],
+        #'Kattakurgan Dam': ['Kattakurgan Dam'],
+        #'Kumkurgan Dam': ['Kumkurgan Dam', 'Kumkurgan Dam Turbines'],
+        #'Kuyumazar Dam': ['Kuyumazar Dam'],
+        'Muminabad Dam': ['Muminabad Dam'],
+        'Nurek Dam': ['Nurek Dam', 'Nurek Dam Turbines'],
+        'Pachkamar Dam': ['Pachkamar Dam'],
+        'Rogun Dam': ['Rogun Dam', 'Rogun Dam Turbines'],
+        'Sangtuda 1 Dam': ['Sangtuda 1 Dam', 'Sangtuda 1 Turbine'],
+        'Sangtuda 2 Dam': ['Sangtuda 2 Dam', 'Sangtuda 2 Turbine'],
+        #'Talimardzhan Dam': ['Talimardzhan Dam'],
+        #'THC': ['THC Complex Dam in-channel', 'THC Complex Dam off-channel', 'THC Turbine'],
+        #'Tudakul Dam': ['Tudakul Dam'],
+        #'Tupalang Dam': ['Tupalang Dam'],
+        #'Tusunsoy Dam': ['Tusunsoy Dam'],
+        #'Uchkyzyl Dam': ['Uchkyzyl Dam'],
+        }
+
+    for dam, items in dams_to_modify.items():
+
+        with open(filename) as jfile:
+            dta = json.load(jfile)
+
+            for node in dta['nodes']:
+                name = node.get('name')
+
+                if name in items:
+                    if 'Dam' in name and not 'Turbine' in name:
+                        node['min_volume'] = 0
+                        node['max_volume'] = 0
+                        node['initial_volume_pc'] = 0
+                        #del node['level']
+                        #del node['area']
+                    else:
+                        node['max_flow'] = 0
+
+        base, ext = os.path.splitext(filename)
+        output_directory = os.path.join(f'{base}_outputs')
+
+        os.makedirs(os.path.join(output_directory), exist_ok=True)
+
+        with open(f'{base}_{dam}{ext}', 'w') as to_save:
+            json.dump(dta, to_save, indent=4)
+
+        model = Model.load(dta, solver='glpk')
+
+        # Silence Warnings
+        warnings.filterwarnings('ignore', category=tables.NaturalNameWarning)
+        warnings.filterwarnings("ignore", category=FutureWarning, message=".*Resampling with a PeriodIndex is deprecated.*")
+        warnings.filterwarnings("ignore", category=FutureWarning, message=".*'AS' is deprecated and will be removed in a future version, please use 'YS' instead.*")
+        warnings.filterwarnings("ignore", category=FutureWarning, message=".*DataFrame.groupby with axis=1 is deprecated.*")
+        
+        ProgressRecorder(model)
+
+        # Save DataFrame recorders
+        store_metrics = pd.HDFStore(os.path.join(output_directory, f"{base}_{dam}_metrics.h5"), mode='w')
+        store_recorders = pd.HDFStore(os.path.join(output_directory, f"{base}_{dam}_recorders.h5"), mode='w')
+        store_aggreated = pd.HDFStore(os.path.join(output_directory, f"{base}_{dam}_aggregated.h5"), mode='w')
+
+        logger.info('Starting model run.')
+        ret = model.run()
+        logger.info(ret)
+        print(ret.to_dataframe())
+
+        for rec in model.recorders:
+                
+            if hasattr(rec, 'to_dataframe') and 'recorder' in rec.name:
+                df = rec.to_dataframe()
+
+                if model.timestepper.freq != df.index.freq:
+                    store_recorders[rec.name] = df
+
+                else:
+                    if 'Hydropower Energy [MWh]' in rec.name:
+                        store_recorders[rec.name] = df.resample('M').mean().multiply(30.42).loc[:str(model.timestepper.end.year),:] # Convert to MWh/month
+                    else:
+                        store_recorders[rec.name] = df.resample('M').mean().loc[:str(model.timestepper.end.year),:]
+
+            try:
+                if 'Aggregated' in rec.name:
+                    values = np.array(rec.values())
+
+            except NotImplementedError:
+                pass
+            
+            else:
+                if 'Aggregated' in rec.name:
+                    store_aggreated[rec.name] = pd.Series(values)
+        
+        store_recorders.close()
+        store_aggreated.close()
+
+        for rec in model.recorders:
+
+            try:
+                if ('Reliability' in rec.name or 'Resilience' in rec.name 
+                    or 'Annual Deficit' in rec.name or 'annual crop yield' in rec.name or 'supply reliability' in rec.name):
+                    values = rec.values()
+
+                if 'Hydropower Energy [MWh]' in rec.name:
+                    sc_index = model.scenarios.multiindex
+                    vals_hy = pd.DataFrame(np.array(rec.values()), index=sc_index)
+                    vals_hy.columns = [''] * len(vals_hy.columns)
+                    number_of_time_steps = (model.timestepper.end - model.timestepper.start)/model.timestepper.freq
+                    values_hydropower = vals_hy.divide(number_of_time_steps).multiply(365) # Convert to MWh/year
+
+                if 'Hydropower Firm Power [MW]' in rec.name:
+                    sc_index = model.scenarios.multiindex
+                    vals_pw = pd.DataFrame(np.array(rec.values()), index=sc_index)
+
+                    vals_pw.columns = [''] * len(vals_pw.columns)
+                    valures_firm_power = vals_pw
+
+                if 'Volumetric Supply' in rec.name:
+                    sc_index = model.scenarios.multiindex
+                    start = model.timestepper.start.year
+                    end = model.timestepper.end.year
+
+                    vals_volumetric = pd.DataFrame(np.array(rec.values()), index=sc_index)
+
+                    div = (end - start) + 1
+
+                    vals_volumetric.columns = [''] * len(vals_volumetric.columns)
+                    values_volumetric = vals_volumetric.divide(div) # Convert to Mm3/year
+
+            except NotImplementedError:
+                pass
+            
+            else:
+                if ('Reliability' in rec.name or 'Resilience' in rec.name 
+                    or 'Annual Deficit' in rec.name or 'annual crop yield' in rec.name or 'supply reliability' in rec.name):
+                    try:
+                        store_metrics[f"{rec.name}"] = values
+                    except Exception as excp:
+                        logger.error(f"Error in saving data  in store_metrics:\n rec.name: {rec.name}.")
+
+                if 'Hydropower Energy [MWh]' in rec.name:
+                    try:
+                        store_metrics[f"{rec.name}"] = values_hydropower
+                    except Exception as excp:
+                        logger.error(f"Error in saving data  in store_metrics:\n rec.name: {rec.name}.")
+                
+                if 'Hydropower Firm Power [MW]' in rec.name:
+                    try:
+                        store_metrics[f"{rec.name}"] = valures_firm_power
+                    except Exception as excp:
+                        logger.error(f"Error in saving data  in store_metrics:\n rec.name: {rec.name}.")
+
+                if 'Volumetric Supply' in rec.name:
+                    try:
+                        store_metrics[f"{rec.name}"] = values_volumetric
+                    except Exception as excp:
+                        logger.error(f"Error in saving data  in store_metrics:\n rec.name: {rec.name}.")
+
+        store_metrics.close()
 
 
 @cli.command(name='pyborg')

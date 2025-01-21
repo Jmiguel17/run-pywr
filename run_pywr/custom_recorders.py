@@ -785,7 +785,9 @@ class AverageAnnualCropYieldScenarioRecorder(NodeRecorder):
         curtailment_ratio.replace([np.inf, -np.inf], 0, inplace=True) # Replace inf with 0
 
         areas = pd.Series(np.array(areas), index=sc_index)
-
+        # units for yields are in kg/ha
+        # units for areas are in ha
+        # units for crop_yield are in kg
         crop_yield = curtailment_ratio.multiply(areas, axis=1).multiply(max_flow_param.yield_per_area, axis=0)
 
 
