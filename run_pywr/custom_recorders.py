@@ -792,7 +792,7 @@ class AverageAnnualCropYieldScenarioRecorder(NodeRecorder):
 
 
         return crop_yield.mean(axis=0)
-
+    
 
 AverageAnnualCropYieldScenarioRecorder.register()
 
