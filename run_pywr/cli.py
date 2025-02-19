@@ -501,54 +501,159 @@ def run_scenarios(filename, start, end, resample):
 
     logger.info('Loading model from file: "{}"'.format(filename))
 
-    with open(filename) as jfile:
-        dta = json.load(jfile)
+    for i in range(start, end):
 
-        dta['scenarios'][0]['slice'][0] = start
-        dta['scenarios'][0]['slice'][1] = end
-    
-    model = Model.load(dta, solver='glpk')
+        with open(filename) as jfile:
+            dta = json.load(jfile)
 
-    warnings.filterwarnings('ignore', category=tables.NaturalNameWarning)
-    
-    ProgressRecorder(model)
+            dta['scenarios'][0]['slice'][0] = i
+            dta['scenarios'][0]['slice'][1] = i+1
+        
+        model = Model.load(dta, solver='glpk')
 
-    base, ext = os.path.splitext(filename)
+        warnings.filterwarnings('ignore', category=tables.NaturalNameWarning)
+        
+        ProgressRecorder(model)
 
-    output_directory = os.path.join(base, f"outputs_{start}_{end}")
+        base, ext = os.path.splitext(filename)
 
-    os.makedirs(os.path.join(output_directory), exist_ok=True)
+        output_directory = os.path.join(base, f"outputs_{i}_{i+1}")
 
-    logger.info('Starting model run.')
-    ret = model.run()
-    logger.info(ret)
-    print(ret.to_dataframe())
+        os.makedirs(os.path.join(output_directory), exist_ok=True)
+
+        # Save DataFrame recorders
+        store_metrics = pd.HDFStore(os.path.join(output_directory, f"{base}_metrics.h5"), mode='w')
+        store_recorders = pd.HDFStore(os.path.join(output_directory, f"{base}_recorders.h5"), mode='w')
+        store_aggreated = pd.HDFStore(os.path.join(output_directory, f"{base}_aggregated.h5"), mode='w')
+
+        logger.info('Starting model run.')
+        ret = model.run()
+        logger.info(ret)
+        print(ret.to_dataframe())
+
+        for rec in model.recorders:
+                
+            if hasattr(rec, 'to_dataframe') and 'recorder' in rec.name:
+                df = rec.to_dataframe()
+
+                if model.timestepper.freq != df.index.freq:
+                    store_recorders[rec.name] = df
+
+                else:
+                    if 'Hydropower Energy [MWh]' in rec.name:
+                        store_recorders[rec.name] = df.resample('M').mean().multiply(30.42).loc[:str(model.timestepper.end.year),:] # Convert to MWh/month
+                    else:
+                        store_recorders[rec.name] = df.resample('M').mean().loc[:str(model.timestepper.end.year),:]
+
+            try:
+                if 'Aggregated' in rec.name:
+                    values = np.array(rec.values())
+
+            except NotImplementedError:
+                pass
+            
+            else:
+                if 'Aggregated' in rec.name:
+                    store_aggreated[rec.name] = pd.Series(values)
+        
+        store_recorders.close()
+        store_aggreated.close()
+
+        for rec in model.recorders:
+
+            try:
+                if ('Reliability' in rec.name or 'Resilience' in rec.name 
+                    or 'Annual Deficit' in rec.name or 'annual crop yield' in rec.name or 'supply reliability' in rec.name):
+                    values = rec.values()
+
+                if 'Hydropower Energy [MWh]' in rec.name:
+                    sc_index = model.scenarios.multiindex
+                    vals_hy = pd.DataFrame(np.array(rec.values()), index=sc_index)
+                    vals_hy.columns = [''] * len(vals_hy.columns)
+                    number_of_time_steps = (model.timestepper.end - model.timestepper.start)/model.timestepper.freq
+                    values_hydropower = vals_hy.divide(number_of_time_steps).multiply(365) # Convert to MWh/year
+
+                if 'Hydropower Firm Power [MW]' in rec.name:
+                    sc_index = model.scenarios.multiindex
+                    vals_pw = pd.DataFrame(np.array(rec.values()), index=sc_index)
+
+                    vals_pw.columns = [''] * len(vals_pw.columns)
+                    valures_firm_power = vals_pw
+
+                if 'Volumetric Supply' in rec.name:
+                    sc_index = model.scenarios.multiindex
+                    start = model.timestepper.start.year
+                    end = model.timestepper.end.year
+
+                    vals_volumetric = pd.DataFrame(np.array(rec.values()), index=sc_index)
+
+                    div = (end - start) + 1
+
+                    vals_volumetric.columns = [''] * len(vals_volumetric.columns)
+                    values_volumetric = vals_volumetric.divide(div) # Convert to Mm3/year
+
+            except NotImplementedError:
+                pass
+            
+            else:
+                if ('Reliability' in rec.name or 'Resilience' in rec.name 
+                    or 'Annual Deficit' in rec.name or 'annual crop yield' in rec.name or 'supply reliability' in rec.name):
+                    try:
+                        store_metrics[f"{rec.name}"] = values
+                    except Exception as excp:
+                        logger.error(f"Error in saving data  in store_metrics:\n rec.name: {rec.name}.")
+
+                if 'Hydropower Energy [MWh]' in rec.name:
+                    try:
+                        store_metrics[f"{rec.name}"] = values_hydropower
+                    except Exception as excp:
+                        logger.error(f"Error in saving data  in store_metrics:\n rec.name: {rec.name}.")
+                
+                if 'Hydropower Firm Power [MW]' in rec.name:
+                    try:
+                        store_metrics[f"{rec.name}"] = valures_firm_power
+                    except Exception as excp:
+                        logger.error(f"Error in saving data  in store_metrics:\n rec.name: {rec.name}.")
+
+                if 'Volumetric Supply' in rec.name:
+                    try:
+                        store_metrics[f"{rec.name}"] = values_volumetric
+                    except Exception as excp:
+                        logger.error(f"Error in saving data  in store_metrics:\n rec.name: {rec.name}.")
+
+        store_metrics.close()
+
+
+    # logger.info('Starting model run.')
+    # ret = model.run()
+    # logger.info(ret)
+    # print(ret.to_dataframe())
 
     # Save DataFrame recorders
-    store = pd.HDFStore(os.path.join(output_directory, f"{base}_recorders.h5"), mode='w')
+    # store = pd.HDFStore(os.path.join(output_directory, f"{base}_recorders.h5"), mode='w')
 
-    for rec in model.recorders:
+    # for rec in model.recorders:
         
-        if hasattr(rec, 'to_dataframe'):
-            df = rec.to_dataframe()
+    #     if hasattr(rec, 'to_dataframe'):
+    #         df = rec.to_dataframe()
 
-            if resample == True:
-                df = df.resample('M').mean()
-                store[rec.name] = df
+    #         if resample == True:
+    #             df = df.resample('M').mean()
+    #             store[rec.name] = df
 
-            else:
-                store[rec.name] = df
+    #         else:
+    #             store[rec.name] = df
 
-        try:
-            values = np.array(rec.values())
+    #     try:
+    #         values = np.array(rec.values())
 
-        except NotImplementedError:
-            pass
+    #     except NotImplementedError:
+    #         pass
         
-        else:
-            store[f"{rec.name}_values"] = pd.Series(values)
+    #     else:
+    #         store[f"{rec.name}_values"] = pd.Series(values)
     
-    store.close()
+    # store.close()
 
 
 @cli.command(name='pywr_mpi_borg')
