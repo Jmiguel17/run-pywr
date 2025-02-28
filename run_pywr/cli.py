@@ -145,6 +145,26 @@ def run_simulation(filename):
     This method is used to run a pywr model and saving all the extra recorders/metrics we normally use in projects we have with The World Bank.
     """
 
+    ''' -------- TEMPORAL FUNCTION -NEED TO FIX IT USING FILLFORWARD METHOD ON THE RECORDERS ----'''
+    def convert_freq_to_days(freq):
+        """
+        Convert a frequency string to the number of days.
+        """
+        print(f"VALUE freq: {freq}")
+        if freq =='D':
+            return 1
+        elif freq.endswith('D'):
+            return int(freq[:-1])
+        elif freq == 'W':
+            return 7
+        elif freq == 'M':
+            return 30.44  # Average number of days in a month
+        elif freq == 'Y':
+            return 365.25  # Average number of days in a year
+        else:
+            return freq
+    ''' -------- ------------------------------------------------------------- ----'''
+
     logger.info('Loading model from file: "{}"'.format(filename))
     model = Model.load(filename, solver='glpk')
 
@@ -210,8 +230,15 @@ def run_simulation(filename):
                 sc_index = model.scenarios.multiindex
                 vals_hy = pd.DataFrame(np.array(rec.values()), index=sc_index)
                 vals_hy.columns = [''] * len(vals_hy.columns)
-                number_of_time_steps = (model.timestepper.end - model.timestepper.start)/model.timestepper.freq
-                values_hydropower = vals_hy.divide(number_of_time_steps).multiply(365) # Convert to MWh/year
+                
+                frq = convert_freq_to_days(model.timestepper.freq)  
+                number_simulated_years = (model.timestepper.end - model.timestepper.start).days / 365.25   # total days of simulation div 365 to get total years
+                factor_to_annual = frq / number_simulated_years  # 
+                values_hydropower = vals_hy.multiply(factor_to_annual) # Convert to MWh/year     
+                
+                # methos 2 alternative (backup)
+                # number_of_time_steps = (model.timestepper.end - model.timestepper.start).days/frq
+                # values_hydropower = vals_hy.divide(number_of_time_steps).multiply(365) # Convert to MWh/year
 
             if 'Hydropower Firm Power [MW]' in rec.name:
                 sc_index = model.scenarios.multiindex
@@ -222,15 +249,13 @@ def run_simulation(filename):
 
             if 'Volumetric Supply' in rec.name:
                 sc_index = model.scenarios.multiindex
-                start = model.timestepper.start.year
-                end = model.timestepper.end.year
 
                 vals_volumetric = pd.DataFrame(np.array(rec.values()), index=sc_index)
 
-                div = (end - start) + 1
+                number_simulated_years = (model.timestepper.end - model.timestepper.start).days / 365.25   # total days of simulation div 365 to get total years
 
                 vals_volumetric.columns = [''] * len(vals_volumetric.columns)
-                values_volumetric = vals_volumetric.divide(div) # Convert to Mm3/year
+                values_volumetric = vals_volumetric.divide(number_simulated_years) # Convert to Mm3/year
 
         except NotImplementedError:
             pass
@@ -270,6 +295,26 @@ def run_dams_value(filename):
     """
     This method is used to run a pywr model for the AmuDary project with the WB
     """
+
+    ''' -------- TEMPORAL FUNCTION -NEED TO FIX IT USING FILLFORWARD METHOD ON THE RECORDERS ----'''
+    def convert_freq_to_days(freq):
+        """
+        Convert a frequency string to the number of days.
+        """
+        print(f"VALUE freq: {freq}")
+        if freq =='D':
+            return 1
+        elif freq.endswith('D'):
+            return int(freq[:-1])
+        elif freq == 'W':
+            return 7
+        elif freq == 'M':
+            return 30.44  # Average number of days in a month
+        elif freq == 'Y':
+            return 365.25  # Average number of days in a year
+        else:
+            return freq
+    ''' -------- ------------------------------------------------------------- ----'''
 
     logger.info('Loading model from file: "{}"'.format(filename))
 
@@ -385,8 +430,15 @@ def run_dams_value(filename):
                     sc_index = model.scenarios.multiindex
                     vals_hy = pd.DataFrame(np.array(rec.values()), index=sc_index)
                     vals_hy.columns = [''] * len(vals_hy.columns)
-                    number_of_time_steps = (model.timestepper.end - model.timestepper.start)/model.timestepper.freq
-                    values_hydropower = vals_hy.divide(number_of_time_steps).multiply(365) # Convert to MWh/year
+                    
+                    frq = convert_freq_to_days(model.timestepper.freq)  
+                    number_simulated_years = (model.timestepper.end - model.timestepper.start).days / 365.25   # total days of simulation div 365 to get total years
+                    factor_to_annual = frq / number_simulated_years  # 
+                    values_hydropower = vals_hy.multiply(factor_to_annual) # Convert to MWh/year     
+                    
+                    # methos 2 alternative (backup)
+                    # number_of_time_steps = (model.timestepper.end - model.timestepper.start).days/frq
+                    # values_hydropower = vals_hy.divide(number_of_time_steps).multiply(365) # Convert to MWh/year
 
                 if 'Hydropower Firm Power [MW]' in rec.name:
                     sc_index = model.scenarios.multiindex
@@ -397,15 +449,13 @@ def run_dams_value(filename):
 
                 if 'Volumetric Supply' in rec.name:
                     sc_index = model.scenarios.multiindex
-                    start = model.timestepper.start.year
-                    end = model.timestepper.end.year
 
                     vals_volumetric = pd.DataFrame(np.array(rec.values()), index=sc_index)
 
-                    div = (end - start) + 1
+                    number_simulated_years = (model.timestepper.end - model.timestepper.start).days / 365.25   # total days of simulation div 365 to get total years
 
                     vals_volumetric.columns = [''] * len(vals_volumetric.columns)
-                    values_volumetric = vals_volumetric.divide(div) # Convert to Mm3/year
+                    values_volumetric = vals_volumetric.divide(number_simulated_years) # Convert to Mm3/year
 
             except NotImplementedError:
                 pass
@@ -499,6 +549,26 @@ def run_scenarios(filename, start, end, resample):
     Run the Pywr model
     """
 
+    ''' -------- TEMPORAL FUNCTION -NEED TO FIX IT USING FILLFORWARD METHOD ON THE RECORDERS ----'''
+    def convert_freq_to_days(freq):
+        """
+        Convert a frequency string to the number of days.
+        """
+        print(f"VALUE freq: {freq}")
+        if freq =='D':
+            return 1
+        elif freq.endswith('D'):
+            return int(freq[:-1])
+        elif freq == 'W':
+            return 7
+        elif freq == 'M':
+            return 30.44  # Average number of days in a month
+        elif freq == 'Y':
+            return 365.25  # Average number of days in a year
+        else:
+            return freq
+    ''' -------- ------------------------------------------------------------- ----'''
+
     logger.info('Loading model from file: "{}"'.format(filename))
 
     for i in range(start, end):
@@ -570,8 +640,15 @@ def run_scenarios(filename, start, end, resample):
                     sc_index = model.scenarios.multiindex
                     vals_hy = pd.DataFrame(np.array(rec.values()), index=sc_index)
                     vals_hy.columns = [''] * len(vals_hy.columns)
-                    number_of_time_steps = (model.timestepper.end - model.timestepper.start)/model.timestepper.freq
-                    values_hydropower = vals_hy.divide(number_of_time_steps).multiply(365) # Convert to MWh/year
+                    
+                    frq = convert_freq_to_days(model.timestepper.freq)  
+                    number_simulated_years = (model.timestepper.end - model.timestepper.start).days / 365.25   # total days of simulation div 365 to get total years
+                    factor_to_annual = frq / number_simulated_years  # 
+                    values_hydropower = vals_hy.multiply(factor_to_annual) # Convert to MWh/year     
+                    
+                    # methos 2 alternative (backup)
+                    # number_of_time_steps = (model.timestepper.end - model.timestepper.start).days/frq
+                    # values_hydropower = vals_hy.divide(number_of_time_steps).multiply(365) # Convert to MWh/year
 
                 if 'Hydropower Firm Power [MW]' in rec.name:
                     sc_index = model.scenarios.multiindex
@@ -582,15 +659,13 @@ def run_scenarios(filename, start, end, resample):
 
                 if 'Volumetric Supply' in rec.name:
                     sc_index = model.scenarios.multiindex
-                    start = model.timestepper.start.year
-                    end = model.timestepper.end.year
 
                     vals_volumetric = pd.DataFrame(np.array(rec.values()), index=sc_index)
 
-                    div = (end - start) + 1
+                    number_simulated_years = (model.timestepper.end - model.timestepper.start).days / 365.25   # total days of simulation div 365 to get total years
 
                     vals_volumetric.columns = [''] * len(vals_volumetric.columns)
-                    values_volumetric = vals_volumetric.divide(div) # Convert to Mm3/year
+                    values_volumetric = vals_volumetric.divide(number_simulated_years) # Convert to Mm3/year
 
             except NotImplementedError:
                 pass
