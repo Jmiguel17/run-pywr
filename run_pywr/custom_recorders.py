@@ -741,9 +741,9 @@ class AverageAnnualCropYieldScenarioRecorder(NodeRecorder):
         ncomb = len(self.model.scenarios.combinations)
         nts = len(self.model.timestepper)
 
-        self._supply = np.zeros((nts, ncomb))
-        self._demand = np.zeros((nts, ncomb))
-        self._area = np.zeros((nts, ncomb))
+        self._supply = np.zeros((nts, ncomb), dtype=np.float32)
+        self._demand = np.zeros((nts, ncomb), dtype=np.float32)
+        self._area = np.zeros((nts, ncomb), dtype=np.float32)
 
     def reset(self):
         self._supply[:, :] = 0.0
