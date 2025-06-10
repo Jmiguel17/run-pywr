@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 from pywr.parameters import load_parameter
-from pywr.recorders import NumpyArrayNodeRecorder, NodeRecorder, Aggregator, NumpyArrayStorageRecorder, NumpyArrayAbstractStorageRecorder, Recorder
+from pywr.recorders import NumpyArrayNodeRecorder, NodeRecorder, Aggregator, NumpyArrayStorageRecorder, NumpyArrayAbstractStorageRecorder, Recorder, hydropower_calculation
 
 class NumpyArrayAnnualNodeDeficitFrequencyRecorder(NodeRecorder):
 
@@ -733,9 +733,13 @@ class AverageAnnualCropYieldScenarioRecorder(NodeRecorder):
     """
 
     def __init__(self, model, node, threshold=None, **kwargs):
-        
+
+        temporal_agg_func = kwargs.pop('temporal_agg_func', 'mean')
+
         super().__init__(model, node, **kwargs)
         self.threshold = threshold
+        self._temporal_aggregator = Aggregator(temporal_agg_func)
+        self._temporal_aggregator.func = temporal_agg_func
 
     def setup(self):
         ncomb = len(self.model.scenarios.combinations)
@@ -743,11 +747,14 @@ class AverageAnnualCropYieldScenarioRecorder(NodeRecorder):
 
         self._supply = np.zeros((nts, ncomb))
         self._demand = np.zeros((nts, ncomb))
+        self._yield = np.zeros((nts, ncomb))
         self._area = np.zeros((nts, ncomb))
 
     def reset(self):
         self._supply[:, :] = 0.0
         self._demand[:, :] = 0.0
+        self._yield[:, :] = 0.0
+        self._area[:, :] = 0.0
 
     def after(self):
         ts = self.model.timestepper.current
@@ -757,6 +764,16 @@ class AverageAnnualCropYieldScenarioRecorder(NodeRecorder):
 
             self._supply[ts.index, scenario_index.global_id] = node.flow[scenario_index.global_id]
             self._demand[ts.index, scenario_index.global_id] = node.get_max_flow(scenario_index)
+    
+            if isinstance(node.max_flow.yield_per_area, float):
+                self._yield[ts.index, scenario_index.global_id] = node.max_flow.yield_per_area
+            else:
+                self._yield[ts.index, scenario_index.global_id] = node.max_flow.yield_per_area.get_value(scenario_index)
+
+            if isinstance(node.max_flow.area, float):
+                self._area[ts.index, scenario_index.global_id] = node.max_flow.area
+            else:
+                self._area[ts.index, scenario_index.global_id] = node.max_flow.area.get_value(scenario_index)
 
         return 0
 
@@ -768,10 +785,6 @@ class AverageAnnualCropYieldScenarioRecorder(NodeRecorder):
     def values(self):
         
         max_flow_param = self.node.max_flow
-
-        areas = []
-        for scenario_index in self.model.scenarios.combinations:
-            areas.append(max_flow_param.area.get_value(scenario_index))
         
         index = self.model.timestepper.datetime_index
         sc_index = self.model.scenarios.multiindex
@@ -780,19 +793,19 @@ class AverageAnnualCropYieldScenarioRecorder(NodeRecorder):
 
         supply = pd.DataFrame(np.array(self._supply), index=index, columns=sc_index).resample('Y').sum().loc[:str(last_year), :]
         demand = pd.DataFrame(np.array(self._demand), index=index, columns=sc_index).resample('Y').sum().loc[:str(last_year), :]
+        areas = pd.DataFrame(np.array(self._area), index=index, columns=sc_index).resample('Y').mean().loc[:str(last_year), :]
+        yields = pd.DataFrame(np.array(self._yield), index=index, columns=sc_index).resample('Y').mean().loc[:str(last_year), :]
 
         curtailment_ratio = supply.divide(demand)
         curtailment_ratio.replace([np.inf, -np.inf], 0, inplace=True) # Replace inf with 0
 
-        areas = pd.Series(np.array(areas), index=sc_index)
         # units for yields are in kg/ha
         # units for areas are in ha
         # units for crop_yield are in kg
-        crop_yield = curtailment_ratio.multiply(areas, axis=1).multiply(max_flow_param.yield_per_area, axis=0)
+        crop_yield = curtailment_ratio.multiply(areas, axis=1).multiply(yields, axis=1)
 
+        return crop_yield.mean(axis=0) #self._temporal_aggregator.aggregate_2d(crop_yield.values, axis=0, ignore_nan=self.ignore_nan) 
 
-        return crop_yield.mean(axis=0)
-    
 
 AverageAnnualCropYieldScenarioRecorder.register()
 
@@ -814,10 +827,14 @@ class TotalAnnualCropYieldScenarioRecorder(NodeRecorder):
 
         self._supply = np.zeros((nts, ncomb))
         self._demand = np.zeros((nts, ncomb))
+        self._yield = np.zeros((nts, ncomb))
+        self._area = np.zeros((nts, ncomb))
 
     def reset(self):
         self._supply[:, :] = 0.0
         self._demand[:, :] = 0.0
+        self._yield[:, :] = 0.0
+        self._area[:, :] = 0.0
 
     def after(self):
         ts = self.model.timestepper.current
@@ -827,6 +844,16 @@ class TotalAnnualCropYieldScenarioRecorder(NodeRecorder):
 
             self._supply[ts.index, scenario_index.global_id] = node.flow[scenario_index.global_id]
             self._demand[ts.index, scenario_index.global_id] = node.get_max_flow(scenario_index)
+
+            if isinstance(node.max_flow.yield_per_area, float):
+                self._yield[ts.index, scenario_index.global_id] = node.max_flow.yield_per_area
+            else:
+                self._yield[ts.index, scenario_index.global_id] = node.max_flow.yield_per_area.get_value(scenario_index)
+
+            if isinstance(node.max_flow.area, float):
+                self._area[ts.index, scenario_index.global_id] = node.max_flow.area
+            else:
+                self._area[ts.index, scenario_index.global_id] = node.max_flow.area.get_value(scenario_index)
 
         return 0
 
@@ -838,11 +865,6 @@ class TotalAnnualCropYieldScenarioRecorder(NodeRecorder):
     def values(self):
         
         max_flow_param = self.node.max_flow
-
-        areas = []
-
-        for scenario_index in self.model.scenarios.combinations:
-            areas.append(max_flow_param.area.get_value(scenario_index))
         
         index = self.model.timestepper.datetime_index
         sc_index = self.model.scenarios.multiindex
@@ -851,13 +873,13 @@ class TotalAnnualCropYieldScenarioRecorder(NodeRecorder):
 
         #supply = pd.DataFrame(np.array(self._supply), index=index, columns=sc_index).resample('Y').sum().loc[:str(last_year), :]
         demand = pd.DataFrame(np.array(self._demand), index=index, columns=sc_index).resample('Y').sum().loc[:str(last_year), :]
+        areas = pd.DataFrame(np.array(self._area), index=index, columns=sc_index).resample('Y').mean().loc[:str(last_year), :]
+        yields = pd.DataFrame(np.array(self._yield), index=index, columns=sc_index).resample('Y').mean().loc[:str(last_year), :]
 
         curtailment_ratio = demand.divide(demand)
         curtailment_ratio.replace([np.inf, -np.inf], 0, inplace=True) # Replace inf with 0
 
-        areas = pd.Series(np.array(areas), index=sc_index)
-
-        crop_yield = curtailment_ratio.multiply(areas, axis=1).multiply(max_flow_param.yield_per_area, axis=0)
+        crop_yield = curtailment_ratio.multiply(areas, axis=1).multiply(yields, axis=1)
 
         return crop_yield.mean(axis=0)
 
@@ -1058,3 +1080,549 @@ class AnnualIrrigationSupplyReliabilityScenarioRecorder(NodeRecorder):
 
 
 AnnualIrrigationSupplyReliabilityScenarioRecorder.register()
+
+
+class AverageAnnualIrrigationRevenueScenarioRecorder(NodeRecorder):
+
+    """
+    This recorder computes the average annual irrigation revenue for each scenario based on the curtailment ratio between a node's
+    the price should be imput in $/tn
+    """
+
+    def __init__(self, model, node, threshold=None, price=1, **kwargs):
+
+        temporal_agg_func = kwargs.pop('temporal_agg_func', 'mean')
+
+        super().__init__(model, node, **kwargs)
+        self.threshold = threshold
+        self.price = price
+        self._temporal_aggregator = Aggregator(temporal_agg_func)
+        self._temporal_aggregator.func = temporal_agg_func
+
+    def setup(self):
+        ncomb = len(self.model.scenarios.combinations)
+        nts = len(self.model.timestepper)
+
+        self._supply = np.zeros((nts, ncomb))
+        self._demand = np.zeros((nts, ncomb))
+        self._yield = np.zeros((nts, ncomb))
+        self._area = np.zeros((nts, ncomb))
+
+    def reset(self):
+        self._supply[:, :] = 0.0
+        self._demand[:, :] = 0.0
+        self._yield[:, :] = 0.0
+        self._area[:, :] = 0.0
+
+    def after(self):
+        ts = self.model.timestepper.current
+        node = self.node
+
+        for scenario_index in self.model.scenarios.combinations:
+
+            self._supply[ts.index, scenario_index.global_id] = node.flow[scenario_index.global_id]
+            self._demand[ts.index, scenario_index.global_id] = node.get_max_flow(scenario_index)
+
+            if isinstance(node.max_flow.yield_per_area, float):
+                self._yield[ts.index, scenario_index.global_id] = node.max_flow.yield_per_area
+            else:
+                self._yield[ts.index, scenario_index.global_id] = node.max_flow.yield_per_area.get_value(scenario_index)
+
+            if isinstance(node.max_flow.area, float):
+                self._area[ts.index, scenario_index.global_id] = node.max_flow.area
+            else:
+                self._area[ts.index, scenario_index.global_id] = node.max_flow.area.get_value(scenario_index)
+
+        return 0
+
+    def to_dataframe(self):
+        
+        raise NotImplementedError()
+
+
+    def values(self):
+
+        max_flow_param = self.node.max_flow
+        
+        index = self.model.timestepper.datetime_index
+        sc_index = self.model.scenarios.multiindex
+
+        last_year = index[-1].year
+
+        supply = pd.DataFrame(np.array(self._supply), index=index, columns=sc_index).resample('Y').sum().loc[:str(last_year), :]
+        demand = pd.DataFrame(np.array(self._demand), index=index, columns=sc_index).resample('Y').sum().loc[:str(last_year), :]
+        areas = pd.DataFrame(np.array(self._area), index=index, columns=sc_index).resample('Y').mean().loc[:str(last_year), :]
+        yields = pd.DataFrame(np.array(self._yield), index=index, columns=sc_index).resample('Y').mean().loc[:str(last_year), :]
+
+        curtailment_ratio = supply.divide(demand)
+        curtailment_ratio.replace([np.inf, -np.inf], 0, inplace=True) # Replace inf with 0
+
+        # units for yields are in kg/ha
+        # units for areas are in ha
+        # units for crop_yield are in kg
+        crop_yield = curtailment_ratio.multiply(areas, axis=1).multiply(yields, axis=1)
+        revenue = crop_yield.divide(1e3).multiply(self.price).divide(1e6) # kg to tn then $ to M$
+
+        return self._temporal_aggregator.aggregate_2d(revenue.values, axis=0, ignore_nan=self.ignore_nan)
+    
+
+AverageAnnualIrrigationRevenueScenarioRecorder.register()
+    
+                
+class AnnualSeasonalAccumulatedFlowRecorder(NodeRecorder):
+
+    """
+    This recorder calculates the total annual flow using the months defined per user. 
+    It counts from the 1st of the first month to the last day of the last month.
+    """
+
+    def __init__(self, model, node, months=None, **kwargs):
+        
+        temporal_agg_func = kwargs.pop('temporal_agg_func', 'mean')
+
+        super().__init__(model, node, **kwargs)
+        self.months = months
+        self._temporal_aggregator = Aggregator(temporal_agg_func)
+        self._temporal_aggregator.func = temporal_agg_func
+
+    def setup(self):
+        ncomb = len(self.model.scenarios.combinations)
+        nts = len(self.model.timestepper)
+
+        self.cummulatedFlow = np.zeros((nts, ncomb))
+
+    def reset(self):
+        self.cummulatedFlow[:, :] = 0.0
+
+    def after(self):
+        ts = self.model.timestepper.current
+        node = self.node
+
+        for scenario_index in self.model.scenarios.combinations:
+
+            self.cummulatedFlow[ts.index, scenario_index.global_id] = node.flow[scenario_index.global_id]
+
+        return 0
+
+    def to_dataframe(self):
+        
+        index = self.model.timestepper.datetime_index
+        sc_index = self.model.scenarios.multiindex
+        
+        AnnualFlow = pd.DataFrame(np.array(self.cummulatedFlow), index=index, columns=sc_index)
+        AnnualFlow = AnnualFlow.resample('D').ffill()
+
+        AnnualFlow = AnnualFlow[AnnualFlow.index.month.isin(self.months)]
+
+        last_year = index[-1].year
+        AnnualFlow = AnnualFlow.loc[:str(last_year), :].resample('Y').sum()
+        
+        return AnnualFlow
+
+
+    def values(self):
+        
+        index = self.model.timestepper.datetime_index
+        sc_index = self.model.scenarios.multiindex
+        
+        AnnualFlow = pd.DataFrame(np.array(self.cummulatedFlow), index=index, columns=sc_index)
+        AnnualFlow = AnnualFlow.resample('D').ffill()
+        AnnualFlow = AnnualFlow[AnnualFlow.index.month.isin(self.months)]
+
+        last_year = index[-1].year
+        AnnualFlow = AnnualFlow.loc[:str(last_year), :].resample('Y').sum()
+
+        return self._temporal_aggregator.aggregate_2d(AnnualFlow.values, axis=0, ignore_nan=self.ignore_nan)
+
+
+AnnualSeasonalAccumulatedFlowRecorder.register()
+
+
+class AnnualSeasonalVolumeRecorder(NodeRecorder):
+
+    """
+    This recorder calculates the total annual flow using the months defined per user. 
+    It counts from the 1st of the first month to the last day of the last month.
+    """
+
+    def __init__(self, model, node, months=None, **kwargs):
+        
+        temporal_agg_func = kwargs.pop('temporal_agg_func', 'mean')
+
+        super().__init__(model, node, **kwargs)
+        self.months = months
+        self._temporal_aggregator = Aggregator(temporal_agg_func)
+        self._temporal_aggregator.func = temporal_agg_func
+
+    def setup(self):
+        ncomb = len(self.model.scenarios.combinations)
+        nts = len(self.model.timestepper)
+
+        self.cummulatedFlow = np.zeros((nts, ncomb))
+
+    def reset(self):
+        self.cummulatedFlow[:, :] = 0.0
+
+    def after(self):
+        ts = self.model.timestepper.current
+        node = self.node
+
+        for scenario_index in self.model.scenarios.combinations:
+
+            self.cummulatedFlow[ts.index, scenario_index.global_id] = node.volume[scenario_index.global_id]
+
+        return 0
+
+    def to_dataframe(self):
+        
+        index = self.model.timestepper.datetime_index
+        sc_index = self.model.scenarios.multiindex
+        
+        AnnualVolume = pd.DataFrame(np.array(self.cummulatedFlow), index=index, columns=sc_index)
+        AnnualVolume = AnnualVolume.resample('D').ffill()
+        AnnualVolume = AnnualVolume[AnnualVolume.index.month.isin(self.months)]
+
+        last_year = index[-1].year
+        AnnualVolume = AnnualVolume.loc[:str(last_year), :].resample('Y').mean()
+        
+        return AnnualVolume
+
+
+    def values(self):
+        
+        index = self.model.timestepper.datetime_index
+        sc_index = self.model.scenarios.multiindex
+        
+        AnnualVolume = pd.DataFrame(np.array(self.cummulatedFlow), index=index, columns=sc_index)
+        AnnualVolume = AnnualVolume.resample('D').ffill()
+        AnnualVolume = AnnualVolume[AnnualVolume.index.month.isin(self.months)]
+
+        last_year = index[-1].year
+        AnnualVolume = AnnualVolume.loc[:str(last_year), :].resample('Y').mean()
+        
+        #AnnualVolume = AnnualVolume.mean(axis=0)
+        
+        # get the value only
+        #AnnualVolume = AnnualVolume.values
+
+        return self._temporal_aggregator.aggregate_2d(AnnualVolume.values, axis=0, ignore_nan=self.ignore_nan) 
+
+
+AnnualSeasonalVolumeRecorder.register()
+
+class AnnualHydropowerRecorder(NumpyArrayNodeRecorder):
+    """ Calculates the annual power production using the hydropower equation
+    This recorder is inspired on the `pywr.recorders.HydropowerRecorder` but it is
+    designed to be used with the `pywr.recorders.NumpyArrayNodeRecorder` class. 
+
+    Parameters
+    ----------
+
+    water_elevation_parameter : Parameter instance (default=None)
+        Elevation of water entering the turbine. The difference of this value with the `turbine_elevation` gives
+        the working head of the turbine.
+    turbine_elevation : double
+        Elevation of the turbine itself. The difference between the `water_elevation` and this value gives
+        the working head of the turbine.
+    efficiency : float (default=1.0)
+        The efficiency of the turbine.
+    density : float (default=1000.0)
+        The density of water.
+    flow_unit_conversion : float (default=1.0)
+        A factor used to transform the units of flow to be compatible with the equation here. This
+        should convert flow to units of :math:`m^3/day`
+    energy_unit_conversion : float (default=1e-6)
+        A factor used to transform the units of total energy. Defaults to 1e-6 to return :math:`MJ`.
+
+    Notes
+    -----
+    The hydropower calculation uses the following equation.
+
+    .. math:: P = \\rho * g * \\delta H * q
+
+    The flow rate in should be converted to units of :math:`m^3` per day using the `flow_unit_conversion` parameter.
+
+    Head is calculated from the given `water_elevation_parameter` and `turbine_elevation` value. If water elevation
+    is given then head is the difference in elevation between the water and the turbine. If water elevation parameter
+    is `None` then the head is simply the turbine elevation.
+
+
+    See Also
+    --------
+    TotalHydroEnergyRecorder
+    pywr.parameters.HydropowerTargetParameter
+
+    """
+    def __init__(self, model, node, monthly_seasonality, water_elevation_parameter=None, turbine_elevation=0.0, efficiency=1.0, density=1000.0,
+                 flow_unit_conversion=1.0, energy_unit_conversion=1e-6, **kwargs):
+        
+        temporal_agg_func = kwargs.pop('temporal_agg_func', 'mean')
+
+        super().__init__(model, node, **kwargs) # Changed from super(HydropowerRecorder, self) for Python 3+ style
+
+        # Initialize _water_elevation_parameter before setting the property
+        # to ensure the setter can access it if it checks hasattr(self, '_water_elevation_parameter').
+        # However, direct assignment to the property will call the setter.
+        self._water_elevation_parameter = None 
+        self.water_elevation_parameter = water_elevation_parameter # Use the setter
+
+        self._monthly_seasonality = monthly_seasonality
+        self.turbine_elevation = float(turbine_elevation)
+        self.efficiency = float(efficiency)
+        self.density = float(density)
+        self.flow_unit_conversion = float(flow_unit_conversion)
+        self.energy_unit_conversion = float(energy_unit_conversion)
+
+        self._temporal_aggregator = Aggregator(temporal_agg_func)
+        self._temporal_aggregator.func = temporal_agg_func
+
+    @property
+    def water_elevation_parameter(self):
+        """The water elevation parameter instance."""
+        return self._water_elevation_parameter
+
+    @water_elevation_parameter.setter
+    def water_elevation_parameter(self, parameter):
+        """Sets the water elevation parameter, updating children."""
+        current_parameter = getattr(self, '_water_elevation_parameter', None)
+
+        if current_parameter: # If current_parameter is not None and truthy
+            if current_parameter in self.children:
+                self.children.remove(current_parameter)
+        
+        # The original Cython code `self.children.add(parameter)` would add the parameter
+        # to the set `self.children` even if `parameter` is None.
+        # This behavior is preserved here.
+        self.children.add(parameter)
+        
+        self._water_elevation_parameter = parameter
+
+    def setup(self):
+        ncomb = len(self.model.scenarios.combinations)
+        nts = len(self.model.timestepper)
+
+        self._data = np.zeros((nts, ncomb))
+
+    def reset(self):
+        self._data[:, :] = 0.0
+
+    def after(self):
+        """Called after each timestep to record hydropower production."""
+        # Type hints for clarity, not strict enforcement in standard Python
+        # q: float
+        # head: float
+        # power: float
+        
+        ts = self.model.timestepper.current
+        # scenario_index: ScenarioIndex # Type hint for loop variable
+
+        # Assuming self.node is set by the parent class (NumpyArrayNodeRecorder or NodeRecorder)
+        # If not, and self._node is used:
+        # node_flow_attr = self._node.flow # Or however flow is accessed per scenario
+
+        for scenario_index in self.model.scenarios.combinations:
+            
+            if self._water_elevation_parameter is not None:
+                water_elev = self._water_elevation_parameter.get_value(scenario_index)
+                head = water_elev - self.turbine_elevation
+            else:
+                # If water_elevation_parameter is None, head is taken as turbine_elevation.
+                # This matches the docstring and the simplified logic from the Cython code
+                # given turbine_elevation is always a float.
+                head = self.turbine_elevation
+            
+            # Negative head is not physically valid for power generation
+            head = max(head, 0.0)
+
+            # Get the flow from the current node for the specific scenario
+            # NodeRecorder (parent of NumpyArrayNodeRecorder) stores the node as self._node.
+            # Flow for a scenario is typically accessed like this in Pywr:
+            q = self.node.flow[scenario_index.global_id]
+
+            # Calculate power using the external hydropower_calculation function
+            power = hydropower_calculation(
+                q, 
+                head, 
+                0.0,  # Assuming 0.0 for tailwater_elevation as in the Cython call
+                self.efficiency, 
+                density=self.density,
+                flow_unit_conversion=self.flow_unit_conversion,
+                energy_unit_conversion=self.energy_unit_conversion
+            )
+            
+            # Store the calculated power
+            # self._data is assumed to be a 2D NumPy array (timesteps, scenarios)
+            self._data[ts.index, scenario_index.global_id] = power
+
+    def values(self):
+        """Compute a value for each scenario using `temporal_agg_func`.
+        """
+
+        index = self.model.timestepper.datetime_index
+        sc_index = self.model.scenarios.multiindex
+
+        annual_hydropower = pd.DataFrame(np.array(self._data), index=index, columns=sc_index)
+
+        annual_hydropower = annual_hydropower.resample('D').ffill()
+
+        if self._monthly_seasonality is not None:
+            annual_hydropower = annual_hydropower[annual_hydropower.index.month.isin(self._monthly_seasonality)]
+
+        annual_hydropower = annual_hydropower.resample('Y').sum() # To get annual hydropower generation in MWh/year
+
+        if self.factor is not None:
+            annual_hydropower = annual_hydropower.multiply(self.factor, axis=0)
+    
+        return self._temporal_aggregator.aggregate_2d(annual_hydropower.values, axis=0, ignore_nan=self.ignore_nan) # Return revenues if a factor (price) is set
+    
+
+    def to_dataframe(self):
+        """ Return a `pandas.DataFrame` of the recorder data
+
+        to_dataframe() is a method that returns the hydropower generation in energy units at annual scale.
+        
+        This DataFrame contains a MultiIndex for the columns with the recorder name
+        as the first level and scenario combination names as the second level. This
+        allows for easy combination with multiple recorder's DataFrames
+        """
+        index = self.model.timestepper.datetime_index
+        sc_index = self.model.scenarios.multiindex
+
+        annual_hydropower = pd.DataFrame(np.array(self._data), index=index, columns=sc_index)
+
+        annual_hydropower = annual_hydropower.resample('D').ffill()
+
+        if self._monthly_seasonality is not None:
+            annual_hydropower = annual_hydropower[annual_hydropower.index.month.isin(self._monthly_seasonality)]
+
+        return annual_hydropower.resample('Y').sum() # To get annual hydropower generation in MWh/year
+
+    @classmethod
+    def load(cls, model, data):
+        """Loads the recorder from a dictionary configuration."""
+        # It's good practice to ensure 'pywr.parameters' is accessible
+        # or handle potential ImportError if this code is part of a larger system.
+        from pywr.parameters import load_parameter # Assuming pywr is structured this way
+
+        node_name = data.pop("node")
+        monthly_seasonality = data.pop("monthly_seasonality", None)
+        node = model.nodes[node_name] # Get the actual node instance
+
+        water_elevation_param_data = data.pop("water_elevation_parameter", None)
+        water_elevation_parameter = None
+        if water_elevation_param_data is not None:
+            water_elevation_parameter = load_parameter(model, water_elevation_param_data)
+        
+        # Remaining items in data are passed as kwargs to __init__
+        return cls(model, node, monthly_seasonality, water_elevation_parameter=water_elevation_parameter, **data)
+    
+    
+AnnualHydropowerRecorder.register()
+
+class SeasonalTransferConstraintRecorder(NodeRecorder):
+
+    """
+    This recorder calculates the total annual flow using the months defined per user. 
+    It counts from the 1st of the first month to the last day of the last month.
+    """
+
+    def __init__(self, model, node, node_rule, monthly_seasonality=None, **kwargs):
+        
+        temporal_agg_func = kwargs.pop('temporal_agg_func', 'mean')
+
+        super().__init__(model, node, **kwargs)
+        self.node_rule = node_rule
+        self.monthly_seasonality = monthly_seasonality
+        self._temporal_aggregator = Aggregator(temporal_agg_func)
+        self._temporal_aggregator.func = temporal_agg_func
+
+    def setup(self):
+        ncomb = len(self.model.scenarios.combinations)
+        nts = len(self.model.timestepper)
+
+        self._data = np.zeros((nts, ncomb))
+        self._data_rule = np.zeros((nts, ncomb))
+
+    def reset(self):
+        self._data[:, :] = 0.0
+        self._data_rule[:, :] = 0.0
+
+    def after(self):
+        ts = self.model.timestepper.current
+        node = self.node
+        node_rule = self.node_rule
+
+        for scenario_index in self.model.scenarios.combinations:
+
+            self._data[ts.index, scenario_index.global_id] = node.flow[scenario_index.global_id]
+            self._data_rule[ts.index, scenario_index.global_id] = node_rule.flow[scenario_index.global_id]
+
+        return 0
+
+    def to_dataframe(self):
+        
+        index = self.model.timestepper.datetime_index
+        sc_index = self.model.scenarios.multiindex
+        
+        outflow = pd.DataFrame(np.array(self._data), index=index, columns=sc_index)
+        outflow = outflow.resample('D').ffill()
+
+        outflow = outflow[outflow.index.month.isin(self.monthly_seasonality)]
+
+        last_year = index[-1].year
+        outflow = outflow.loc[:str(last_year), :].resample('Y').sum()
+
+        rule = pd.DataFrame(np.array(self._data_rule), index=index, columns=sc_index)
+        rule = rule.resample('D').ffill()
+
+        rule = rule[rule.index.month.isin(self.monthly_seasonality)]
+
+        last_year = index[-1].year
+        rule = rule.loc[:str(last_year), :].resample('Y').sum()
+
+        return rule.multiply(0.8) - outflow
+
+
+    def values(self):
+        
+        index = self.model.timestepper.datetime_index
+        sc_index = self.model.scenarios.multiindex
+        
+        outflow = pd.DataFrame(np.array(self._data), index=index, columns=sc_index)
+        outflow = outflow.resample('D').ffill()
+
+        outflow = outflow[outflow.index.month.isin(self.monthly_seasonality)]
+
+        last_year = index[-1].year
+        outflow = outflow.loc[:str(last_year), :].resample('Y').sum()
+
+        rule = pd.DataFrame(np.array(self._data_rule), index=index, columns=sc_index)
+        rule = rule.resample('D').ffill()
+
+        rule = rule[rule.index.month.isin(self.monthly_seasonality)]
+
+        last_year = index[-1].year
+        rule = rule.loc[:str(last_year), :].resample('Y').sum()
+
+        constraint = rule.multiply(0.8) - outflow
+
+        return self._temporal_aggregator.aggregate_2d(constraint.values, axis=0, ignore_nan=self.ignore_nan)
+    
+
+    @classmethod
+    def load(cls, model, data):
+        """Loads the recorder from a dictionary configuration."""
+        
+        node_name = data.pop("node")
+        node_rule_name = data.pop("node_rule", None)
+
+        node = model.nodes[node_name] # Get the actual node instance
+        node_rule = model.nodes[node_rule_name] # Get the actual node instance
+
+        monthly_seasonality = data.pop("monthly_seasonality", None)
+        
+        # Remaining items in data are passed as kwargs to __init__
+        return cls(model, node, node_rule, monthly_seasonality, **data)
+
+
+SeasonalTransferConstraintRecorder.register()

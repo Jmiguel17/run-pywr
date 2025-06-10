@@ -16,6 +16,21 @@ from .custom_parameters import *
 from pywr.recorders.progress import ProgressRecorder
 from pywr.recorders import TablesRecorder, CSVRecorder
 
+# from wre_moea.libs.define_imports import * #cli_algorithm_search
+# from wre_moea.libs.groups.algorithm_search.commands import cli_algorithm_search
+
+import datetime
+
+# from wre_moea.config import LOG_ALERT_PREFIX
+# from wre_moea.libs.mixin.moea import (
+#     InterfacePlatypusWrapper,
+#     PyretoMongoPlatypusWrapper,
+#     SaveNondominatedSolutionsArchive,
+#     write_file_to_s3
+# )
+
+
+
 # Suppress warnings in current Pywr
 warnings.filterwarnings("ignore", category=RuntimeWarning, message=r".*Document requires version.*")  # optimisation/__init__.py:111
 warnings.filterwarnings("ignore", category=FutureWarning, message=r".*Resampling with a PeriodIndex.*")  # dataframe_tools.py:127
@@ -150,7 +165,7 @@ def run_simulation(filename):
         """
         Convert a frequency string to the number of days.
         """
-        print(f"VALUE freq: {freq}")
+        #print(f"VALUE freq: {freq}")
         if freq =='D':
             return 1
         elif freq.endswith('D'):
@@ -224,7 +239,9 @@ def run_simulation(filename):
         try:
             if ('Reliability' in rec.name or 'Resilience' in rec.name 
                 or 'Annual Deficit' in rec.name or 'annual crop yield' in rec.name or 'supply reliability' in rec.name):
-                values = rec.values()
+                sc_index = model.scenarios.multiindex
+                values = pd.DataFrame(np.array(rec.values()), index=sc_index)
+                #values = np.array(rec.values()) #rec.values()
 
             if 'Hydropower Energy [MWh]' in rec.name:
                 sc_index = model.scenarios.multiindex
@@ -301,7 +318,7 @@ def run_dams_value(filename):
         """
         Convert a frequency string to the number of days.
         """
-        print(f"VALUE freq: {freq}")
+
         if freq =='D':
             return 1
         elif freq.endswith('D'):
@@ -320,29 +337,30 @@ def run_dams_value(filename):
 
     dams_to_modify = {
         'All_dams': ['All_dams'],
-        'Akdarya Dam': ['Akdarya Dam'],
-        'Aktepin Dam': ['Aktepin Dam'],
-        'Baipaza Dam': ['Baipaza Dam', 'Baipaza Dam Turbines'],
-        'Chimkurgan Dam': ['Chimkurgan Dam'],
-        'Gissarak Dam': ['Gissarak Dam', 'Gissarak Dam Turbines'],
-        'Golovnaya Dam': ['Golovnaya Dam', 'Golovnaya Turbine'],
-        'Kamashi Dam': ['Kamashi Dam'],
-        'Karasuv Dam': ['Karasuv Dam'],
-        'Kattakurgan Dam': ['Kattakurgan Dam'],
-        'Kumkurgan Dam': ['Kumkurgan Dam', 'Kumkurgan Dam Turbines'],
-        'Kuyumazar Dam': ['Kuyumazar Dam'],
-        'Muminabad Dam': ['Muminabad Dam'],
-        'Nurek Dam': ['Nurek Dam', 'Nurek Dam Turbines'],
-        'Pachkamar Dam': ['Pachkamar Dam'],
-        'Rogun Dam': ['Rogun Dam', 'Rogun Dam Turbines'],
-        'Sangtuda 1 Dam': ['Sangtuda 1 Dam', 'Sangtuda 1 Turbine'],
-        'Sangtuda 2 Dam': ['Sangtuda 2 Dam', 'Sangtuda 2 Turbine'],
-        'Talimardzhan Dam': ['Talimardzhan Dam'],
-        'THC': ['THC Complex Dam in-channel', 'THC Complex Dam off-channel', 'THC Turbine'],
-        'Tudakul Dam': ['Tudakul Dam'],
-        'Tupalang Dam': ['Tupalang Dam'],
-        'Tusunsoy Dam': ['Tusunsoy Dam'],
-        'Uchkyzyl Dam': ['Uchkyzyl Dam'],
+        # 'Akdarya Dam': ['Akdarya Dam'],
+        # 'Aktepin Dam': ['Aktepin Dam'],
+        # 'Baipaza Dam': ['Baipaza Dam', 'Baipaza Dam Turbines'],# 'Baipaza Dam Control Release'],
+        # 'Chimkurgan Dam': ['Chimkurgan Dam'],
+        # 'Gissarak Dam': ['Gissarak Dam', 'Gissarak Dam Turbines'],# 'Gissarak Dam Control Release'],
+        # 'Golovnaya Dam': ['Golovnaya Dam', 'Golovnaya Turbine'],# 'Golovnaya Control Release'],
+        # 'Kamashi Dam': ['Kamashi Dam'],
+        # 'Karasuv Dam': ['Karasuv Dam'],
+        # 'Kattakurgan Dam': ['Kattakurgan Dam'],
+        # 'Kumkurgan Dam': ['Kumkurgan Dam', 'Kumkurgan Dam Turbines'],# 'Kumkurgan Dam Control Release'],
+        # 'Kuyumazar Dam': ['Kuyumazar Dam'],
+        # 'Muminabad Dam': ['Muminabad Dam'],
+        'Nurek Dam': ['Nurek Dam', 'Nurek Dam Turbines'],# 'Nurek Dam Control Release'],
+        # 'Pachkamar Dam': ['Pachkamar Dam'],
+        'Rogun Dam': ['Rogun Dam', 'Rogun Dam Turbines'], #'Rogun Dam Control Release'],
+        # 'Sangtuda 1 Dam': ['Sangtuda 1 Dam', 'Sangtuda 1 Turbine'],# 'Sangtuda 1 Control Release'],
+        # 'Sangtuda 2 Dam': ['Sangtuda 2 Dam', 'Sangtuda 2 Turbine'],# 'Sangtuda 2 Control Release'],
+        # 'Talimardzhan Dam': ['Talimardzhan Dam'],
+        'THC': ['THC Complex Dam in-channel', 'THC Complex Dam off-channel', 'THC Turbine'], #'THC Complex Dam in-channel Control Release'],
+        # 'Tudakul Dam': ['Tudakul Dam'],
+        # 'Tupalang Dam': ['Tupalang Dam', 'Tupalang Dam Turbines'], #'Tupalang Dam Control Release'],
+        # 'Tusunsoy Dam': ['Tusunsoy Dam'],
+        # 'Uchkyzyl Dam': ['Uchkyzyl Dam'],
+        'Nurek and Rogun Dams': ['Rogun Dam', 'Rogun Dam Turbines', 'Nurek Dam', 'Nurek Dam Turbines']
         }
 
     for dam, items in dams_to_modify.items():
@@ -354,12 +372,14 @@ def run_dams_value(filename):
                 name = node.get('name')
 
                 if name in items:
-                    if 'Dam' in name and not 'Turbine' in name:
+                    if 'Dam' in name and not 'Turbine' in name and not 'Control' in name:
                         node['min_volume'] = 0
                         node['max_volume'] = 0
                         node['initial_volume_pc'] = 0
                         #del node['level']
                         #del node['area']
+                    # elif 'Control Release' in name:
+                    #     node['max_flow'] = 100000
                     else:
                         node['max_flow'] = 0
 
@@ -879,6 +899,142 @@ def search(filename, use_mpi, seed, num_cpus, max_nfe, pop_size, algorithm, wrap
     # Use only to multi-node
     if use_mpi:
         pool.close()
+
+
+
+# @cli_algorithm_search.command("platypus")
+# @click.pass_context
+# @click.argument('filename', type=click.Path(file_okay=True, dir_okay=False, exists=True))
+# @click.option('--output-dir', type=click.Path(file_okay=False, dir_okay=True, exists=True))
+# @click.option('--use-mpi/--no-use-mpi', default=False)
+# @click.option('-s', '--seed', type=int, default=None)
+# @click.option('-p', '--num-cpus', type=int, default=None)
+# @click.option('-n', '--max-nfe', type=int, default=1000)
+# @click.option('--pop-size', type=int, default=50)
+# @click.option('-a', '--algorithm', type=click.Choice(['NSGAII', 'NSGAIII', 'EpsMOEA', 'EpsNSGAII']), default='NSGAII')
+# @click.option('-w', '--wrapper-type', type=click.Choice(['json', 'mongo', 'wpywr']), default='json')
+# @click.option('-e', '--epsilons', multiple=True, type=float, default=(0.05, ))
+# @click.option('--divisions-outer', type=int, default=12)
+# @click.option('--divisions-inner', type=int, default=0)
+# @click.option('--s3-output', is_flag=True, default=False)
+# @click.option('--polyvis', is_flag=True, default=False)
+# def platypus_search_command(ctx, filename, output_dir, use_mpi, seed, num_cpus, max_nfe, pop_size, algorithm, wrapper_type, epsilons, divisions_outer, divisions_inner, s3_output, polyvis):
+#     """Run a search using Platypus"""
+
+#     return platypus_search(filename, s3_output, output_dir, use_mpi, seed, num_cpus, max_nfe, pop_size, algorithm,
+#                            wrapper_type, epsilons, divisions_outer, divisions_inner, polyvis)
+
+# def platypus_search(filename, s3_output, output_dir="/tmp", use_mpi=False, seed=None, num_cpus=None,
+#                     max_nfe=1000, pop_size=50, algorithm='NSGAIII', wrapper_type='json',
+#                     epsilons=(0.05, ), divisions_outer=12, divisions_inner=0, polyvis=False):
+#     logger.info("Running platypus search")
+#     import platypus
+
+#     logger.info('Loading model from file: "{}"'.format(filename))
+#     directory, model_name = os.path.split(filename)
+#     output_directory = 'outputs'#:wos.path.join(directory, 'outputs')
+
+#     if algorithm == 'NSGAII':
+#         from platypus.algorithms import NSGAII
+#         algorithm_klass = NSGAII
+#         algorithm_kwargs = {'population_size': pop_size}
+#     elif algorithm == 'NSGAIII':
+#         from platypus.algorithms import NSGAIII
+#         algorithm_klass = NSGAIII
+#         algorithm_kwargs = {'divisions_outer': divisions_outer, 'divisions_inner': divisions_inner}
+#     elif algorithm == 'EpsMOEA':
+#         from platypus.algorithms import EpsMOEA
+#         algorithm_klass = EpsMOEA
+#         algorithm_kwargs = {'population_size': pop_size, 'epsilons': epsilons}
+#     elif algorithm == 'EpsNSGAII':
+#         from platypus.algorithms import EpsNSGAII
+#         algorithm_klass = EpsNSGAII
+#         algorithm_kwargs = {'population_size': pop_size, 'epsilons': epsilons}
+#     else:
+#         raise RuntimeError('Algorithm "{}" not supported.'.format(algorithm))
+
+#     if seed is None:
+#         seed = random.randint(2, 2**32-1)
+
+#     search_data = {'algorithm': algorithm, 'seed': seed, 'user_metadata': algorithm_kwargs}
+#     if wrapper_type == 'json':
+#         output_directory += '_json'
+#         wrapper = InterfacePlatypusWrapper(
+#         max_nfe,
+#         filename,
+#         use_mpi=use_mpi,
+#         s3_output=s3_output,
+#         polyvis=polyvis,
+#         seed=seed,
+#         num_cpus=num_cpus,
+#         pop_size=pop_size,
+#         algorithm=algorithm,
+#         wrapper_type=wrapper_type,
+#         epsilons=epsilons,
+#         divisions_outer=divisions_outer,
+#         divisions_inner=divisions_inner,
+#         output_dir=output_dir)
+#     elif wrapper_type == 'mongo':
+#         wrapper = PyretoMongoPlatypusWrapper(filename, search_data=search_data, db='volta',
+#                                              uri='mongodb://root:ahmoo8uti4Fa@34.240.214.74:27017/')
+#     elif wrapper_type == 'wpywr':
+#         output_directory += '_archive'
+#         wrapper = SaveNondominatedSolutionsArchive(filename, search_data=search_data, output_directory=output_directory,
+#                                                    model_name=model_name)
+#     else:
+#         raise ValueError(f'Wrapper type "{wrapper_type}" not supported.')
+
+#     logger.info('Starting model search.')
+#     wrapper.make_run_metadata(filename, algorithm, seed, max_nfe, pop_size, **algorithm_kwargs)
+
+#     if use_mpi:
+#         from wre_moea.libs.mixin.mpipool import HydraMPIPool
+
+#         try:
+#             pool = HydraMPIPool(debug=True)
+#         except ValueError:
+#             logger.critical("A Platypus MPIPool requires at least two processes")
+#             exit(1)
+#         evaluator_klass = platypus.PoolEvaluator
+#         evaluator_args = (pool,)
+
+#         if not pool.is_master():
+#             pool.wait()
+#             exit(0)
+
+#     elif num_cpus is None:
+#         from platypus import MapEvaluator
+#         evaluator_klass = MapEvaluator
+#         evaluator_args = ()
+
+#     else:
+#         from platypus import ProcessPoolEvaluator
+#         evaluator_klass = ProcessPoolEvaluator
+#         evaluator_args = (num_cpus,)
+
+#     with evaluator_klass(*evaluator_args) as evaluator:
+#         algorithm = algorithm_klass(wrapper.problem.problem, evaluator=evaluator, **algorithm_kwargs, seed=seed)
+
+#         if wrapper_type == 'wpywr':
+#             algorithm.run(max_nfe, callback=wrapper.save_nondominant)
+#         else:
+#             algorithm.run(max_nfe, callback=wrapper.metrics_callback)
+#             wrapper.output["metadata"]["end"] = datetime.datetime.strftime(datetime.datetime.now(), "%Y-%m-%d %H:%M:%S")
+#             if output_dir:
+#                 output_file = wrapper.write_output(output_dir)
+#                 if s3_output:
+#                     output_url = write_file_to_s3(output_file)
+#                     print(f"{LOG_ALERT_PREFIX}{output_url}", flush=True)
+#             if polyvis:
+#                 from wre_moea.libs.consumers import PolyvisConsumer
+#                 pc = PolyvisConsumer(wrapper.output)
+#                 polyvis_url = pc.process()
+#                 wrapper.output["metadata"]["polyvis"] = polyvis_url
+#                 print(f"{LOG_ALERT_PREFIX}{polyvis_url}", flush=True)
+
+#     # Use only to multi-node
+#     if use_mpi:
+#         pool.close()
 
 
 #@cli.command(name='pywr_borg')

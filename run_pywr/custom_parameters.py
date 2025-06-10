@@ -113,6 +113,7 @@ class IrrigationWaterRequirementParameter(Parameter):
         self._rainfall_parameter = None
         self.reference_et = reference_et
         self.et_parameter = et_parameter
+        self._yield_per_area = None
         self.yield_per_area = yield_per_area
         self._crop_water_factor_parameter = None
         self.revenue_per_yield = revenue_per_yield
@@ -123,7 +124,8 @@ class IrrigationWaterRequirementParameter(Parameter):
         self.application_efficiency = application_efficiency
         self.crop_water_factor_parameter = crop_water_factor_parameter
 
-    et_parameter = parameter_property("_et_parameter")
+    
+    yield_per_area = parameter_property("_yield_per_area")
     rainfall_parameter = parameter_property("_rainfall_parameter")
     crop_water_factor_parameter = parameter_property("_crop_water_factor_parameter")
     conveyance_efficiency = parameter_property("_conveyance_efficiency")
