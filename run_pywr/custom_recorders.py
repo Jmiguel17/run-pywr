@@ -778,8 +778,27 @@ class AverageAnnualCropYieldScenarioRecorder(NodeRecorder):
         return 0
 
     def to_dataframe(self):
+    
+        max_flow_param = self.node.max_flow
         
-        raise NotImplementedError()
+        index = self.model.timestepper.datetime_index
+        sc_index = self.model.scenarios.multiindex
+
+        last_year = index[-1].year
+
+        supply = pd.DataFrame(np.array(self._supply), index=index, columns=sc_index).resample('Y').sum().loc[:str(last_year), :]
+        demand = pd.DataFrame(np.array(self._demand), index=index, columns=sc_index).resample('Y').sum().loc[:str(last_year), :]
+        areas = pd.DataFrame(np.array(self._area), index=index, columns=sc_index).resample('Y').mean().loc[:str(last_year), :]
+        yields = pd.DataFrame(np.array(self._yield), index=index, columns=sc_index).resample('Y').mean().loc[:str(last_year), :]
+
+        curtailment_ratio = supply.divide(demand)
+        curtailment_ratio.replace([np.inf, -np.inf], 0, inplace=True) # Replace inf with 0
+
+        # units for yields are in kg/ha
+        # units for areas are in ha
+        # units for crop_yield are in kg
+        
+        return curtailment_ratio.multiply(areas).multiply(yields)
 
 
     def values(self):
