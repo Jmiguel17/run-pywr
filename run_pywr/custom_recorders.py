@@ -3,8 +3,9 @@ import sys
 import numpy as np
 import pandas as pd
 
-from pywr.parameters import load_parameter
-from pywr.recorders import NumpyArrayNodeRecorder, NodeRecorder, Aggregator, NumpyArrayStorageRecorder, NumpyArrayAbstractStorageRecorder, Recorder, hydropower_calculation
+from pywr.parameters import load_parameter, Parameter
+from pywr.recorders import (NumpyArrayNodeRecorder, NodeRecorder, Aggregator, NumpyArrayStorageRecorder, NumpyArrayAbstractStorageRecorder, 
+                            Recorder, hydropower_calculation, NumpyArrayParameterRecorder, BaseConstantParameterRecorder)
 
 class NumpyArrayAnnualNodeDeficitFrequencyRecorder(NodeRecorder):
 
@@ -1195,6 +1196,7 @@ class AverageAnnualIrrigationRevenueScenarioRecorder(NodeRecorder):
 
         curtailment_ratio = supply.divide(demand)
         curtailment_ratio.replace([np.inf, -np.inf], 0, inplace=True) # Replace inf with 0
+        curtailment_ratio.fillna(0, inplace=True)
 
         # units for yields are in kg/ha
         # units for areas are in ha
@@ -1202,7 +1204,7 @@ class AverageAnnualIrrigationRevenueScenarioRecorder(NodeRecorder):
         crop_yield = curtailment_ratio.multiply(areas, axis=1).multiply(yields, axis=1)
         revenue = crop_yield.divide(1e3).multiply(self.price).divide(1e6) # kg to tn then $ to M$
 
-        return self._temporal_aggregator.aggregate_2d(revenue.values, axis=0, ignore_nan=self.ignore_nan)
+        return self._temporal_aggregator.aggregate_2d(revenue.dropna().values, axis=0, ignore_nan=self.ignore_nan)
     
 
 AverageAnnualIrrigationRevenueScenarioRecorder.register()
@@ -1665,3 +1667,131 @@ class SeasonalTransferConstraintRecorder(NodeRecorder):
 
 
 SeasonalTransferConstraintRecorder.register()
+
+
+class ConveyanceEfficiencyCostRecorder(BaseConstantParameterRecorder):
+    """Recorder to calculate the cost of improving canal conveyance efficiency.
+
+    This recorder calculates the total capital cost of improving canal conveyance
+    efficiency for a given length of canal. The cost is calculated using a
+    power-law relationship between the efficiency gain and the investment cost.
+
+    Attributes
+    ----------
+    parameter : pywr.parameters.Parameter
+        A parameter that provides the target conveyance efficiency as a fraction (0-1).
+    a : float
+        The cost coefficient.
+    b : float
+        The exponent of the cost function.
+    n0 : float
+        The baseline conveyance efficiency (fraction).
+    canal_length_km : float
+        The total length of the canal in kilometers.
+    """
+
+    def __init__(self, model, parameter, a, b, n0, canal_length_km, **kwargs):
+
+        agg_func = kwargs.pop('agg_func', 'mean')
+
+        super().__init__(model, parameter, **kwargs)
+        self.a = a
+        self.b = b
+        self.n0 = n0
+        self.canal_length_km = canal_length_km
+
+        self._scenario_aggregator = Aggregator(agg_func)
+        self._scenario_aggregator.func = agg_func
+
+    def setup(self):
+        ncomb = len(self.model.scenarios.combinations)
+        self.total_cost = np.zeros((ncomb))
+
+    def reset(self):
+        self.total_cost[...] = 0.0
+        
+    def after(self):
+
+        for scenario_index in self.model.scenarios.combinations:
+            efficiency = 1 - self._param.get_value(scenario_index)
+            delta_efficiency = np.maximum(0.0, efficiency - (1-self.n0))
+            cost_per_km = self.a * (delta_efficiency ** self.b)
+            
+            self.total_cost[scenario_index.global_id] = cost_per_km * self.canal_length_km
+
+        return 0
+
+    def values(self):
+        """Compute a value for each scenario using `temporal_agg_func`."""
+        return self.total_cost
+    
+    def aggregated_value(self):
+        return self._scenario_aggregator.aggregate_1d(self.total_cost, ignore_nan=self.ignore_nan)
+
+
+ConveyanceEfficiencyCostRecorder.register()
+
+
+class ReservoirStorageExpansionCostRecorder(BaseConstantParameterRecorder):
+    """Recorder to calculate the cost of new reservoir storage.
+
+    This recorder calculates the capital cost of building new reservoir storage
+    capacity. The cost is calculated using a power function that captures
+    economies of scale.
+
+    Attributes
+    ----------
+    parameter : pywr.parameters.Parameter
+        A parameter that provides the additional storage capacity in MCM.
+    a : float
+        The coefficient of the cost function.
+    b : float
+        The exponent of the cost function.
+    """
+
+    def __init__(self, model, parameter, current_max_volumne, a, b, **kwargs):
+
+        agg_func = kwargs.pop('agg_func', 'mean')
+        super().__init__(model, parameter, **kwargs)
+        self.a = a
+        self.b = b
+
+        self.current_max_volumne = current_max_volumne
+
+        self._scenario_aggregator = Aggregator(agg_func)
+        self._scenario_aggregator.func = agg_func
+
+    def setup(self):
+        ncomb = len(self.model.scenarios.combinations)
+        self.total_cost = np.zeros((ncomb))
+
+    def reset(self):
+        self.total_cost[...] = 0.0
+
+    def after(self):
+
+        for scenario_index in self.model.scenarios.combinations:
+            storage = self._param.get_value(scenario_index) - self.current_max_volumne.get_value(scenario_index)
+            self.total_cost[scenario_index.global_id] = self.a * (storage ** self.b)
+
+        return 0
+
+    def values(self):
+        """Compute a value for each scenario using `temporal_agg_func`."""
+        return self.total_cost
+    
+    def aggregated_value(self):
+        return self._scenario_aggregator.aggregate_1d(self.total_cost, ignore_nan=self.ignore_nan)
+    
+
+    @classmethod
+    def load(cls, model, data):
+        """Loads the recorder from a dictionary configuration."""
+
+        parameter = load_parameter(model, data.pop("parameter"))
+        current_max_volumne = load_parameter(model, data.pop("current_max_volumne"))
+        
+        # Remaining items in data are passed as kwargs to __init__
+        return cls(model, parameter, current_max_volumne, **data)
+
+ReservoirStorageExpansionCostRecorder.register()

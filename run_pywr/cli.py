@@ -84,7 +84,7 @@ def run(filename):
 
     os.makedirs(os.path.join(output_directory), exist_ok=True)
 
-    #TablesRecorder(model, os.path.join(output_directory, f"{base}_parameters.h5"), parameters=[p for p in model.parameters if p.name is not None])
+    # TablesRecorder(model, os.path.join(output_directory, f"{base}_parameters.h5"), parameters=[p for p in model.parameters if p.name is not None])
     TablesRecorder(model, os.path.join(output_directory, f"{base}_parameters.h5"), parameters=[p for p in model.parameters if p.name is not None])
     CSVRecorder(model, os.path.join(output_directory, f"{base}_nodes.csv"))
 
@@ -836,7 +836,7 @@ def search(filename, use_mpi, seed, num_cpus, max_nfe, pop_size, algorithm, wrap
 
     logger.info('Loading model from file: "{}"'.format(filename))
     directory, model_name = os.path.split(filename)
-    output_directory = os.path.join(directory, 'outputs')
+    output_directory = os.path.join(directory, 'outputs', f'{model_name[0:-5]}_{seed}')
 
     if algorithm == 'NSGAII':
         algorithm_klass = platypus.NSGAII
