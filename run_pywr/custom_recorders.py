@@ -1536,7 +1536,12 @@ class AnnualHydropowerRecorder(NumpyArrayNodeRecorder):
         if self._monthly_seasonality is not None:
             annual_hydropower = annual_hydropower[annual_hydropower.index.month.isin(self._monthly_seasonality)]
 
-        return annual_hydropower.resample('Y').sum() # To get annual hydropower generation in MWh/year
+        annual_hydropower.resample('Y').sum() # To get annual hydropower generation in MWh/year
+
+        if self.factor is not None:
+            annual_hydropower = annual_hydropower.multiply(self.factor, axis=0)
+
+        return annual_hydropower
 
     @classmethod
     def load(cls, model, data):
