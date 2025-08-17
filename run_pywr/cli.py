@@ -832,7 +832,7 @@ def pywr_mpi_borg(config_file, seed):
 @click.option('--divisions-inner', type=int, default=0)
 def search(filename, use_mpi, seed, num_cpus, max_nfe, pop_size, algorithm, wrapper_type, epsilons, divisions_outer, divisions_inner):
     import platypus
-    from run_moea.BsonPlatypusWrapper import LoggingArchive , PyretoJSONPlatypusWrapper
+    from run_moea.BsonPlatypusWrapper import LoggingArchive , PyretoJSONPlatypusWrapper, SaveNondominatedSolutionsArchive
 
     logger.info('Loading model from file: "{}"'.format(filename))
     directory, model_name = os.path.split(filename)
@@ -859,6 +859,9 @@ def search(filename, use_mpi, seed, num_cpus, max_nfe, pop_size, algorithm, wrap
     search_data = {'algorithm': algorithm, 'seed': seed, 'user_metadata':algorithm_kwargs}
     if wrapper_type == 'json':
         wrapper = PyretoJSONPlatypusWrapper(filename, search_data=search_data, output_directory=output_directory)
+    elif wrapper_type == 'wpywr':
+        wrapper = SaveNondominatedSolutionsArchive(filename, search_data=search_data, output_directory=output_directory,
+                                                   model_name=model_name)
     else:
         raise ValueError(f'Wrapper type "{wrapper_type}" not supported.')
 
