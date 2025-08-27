@@ -148,9 +148,83 @@ def run(filename):
                 nmes.append(rec.name)
                 rec_to_csv.append(df) 
 
-        rec_to_csv = pd.concat(rec_to_csv, axis=1)
-        rec_to_csv.columns = nmes
-        rec_to_csv.to_csv(os.path.join(output_directory, f"{base}_recorders.csv"))
+        # Group DataFrames by their frequency
+        from collections import defaultdict
+        
+        freq_groups = defaultdict(list)
+        freq_names = defaultdict(list)
+        
+        for i, df in enumerate(rec_to_csv):
+            if hasattr(df.index, 'freq') and df.index.freq is not None:
+                freq = str(df.index.freq)  # Convert to string for consistent grouping
+                freq_groups[freq].append(df)
+                freq_names[freq].append(nmes[i])
+            else:
+                # Handle DataFrames without frequency (likely regular DatetimeIndex or other)
+                freq_key = 'no_frequency'
+                freq_groups[freq_key].append(df)
+                freq_names[freq_key].append(nmes[i])
+        
+        # Create Excel file with separate sheets for each frequency
+        excel_path = os.path.join(output_directory, f"{base}_recorders.xlsx")
+        
+        with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
+            for freq, dfs in freq_groups.items():
+                if dfs:
+                    # Concatenate DataFrames within the same frequency group
+                    try:
+                        concatenated_df = pd.concat(dfs, axis=1)
+                        concatenated_df.columns = freq_names[freq]
+                        
+                        # Clean sheet name (Excel has restrictions on sheet names)
+                        sheet_name = freq.replace('/', '_').replace('\\', '_').replace('*', '_')
+                        sheet_name = sheet_name.replace('[', '').replace(']', '').replace(':', '_')
+                        sheet_name = sheet_name.replace('?', '').replace('<', '').replace('>', '')
+                        
+                        # Ensure sheet name is not longer than 31 characters (Excel limit)
+                        if len(sheet_name) > 31:
+                            sheet_name = sheet_name[:31]
+                        
+                        # Handle special cases for common frequencies
+                        freq_display_names = {
+                            'D': 'Daily',
+                            'A-DEC': 'Annual',
+                            'M': 'Monthly', 
+                            'W': 'Weekly',
+                            'H': 'Hourly',
+                            'no_frequency': 'Other'
+                        }
+                        
+                        display_name = freq_display_names.get(freq, sheet_name)
+                        if len(display_name) > 31:
+                            display_name = display_name[:31]
+                        
+                        concatenated_df.to_excel(writer, sheet_name=display_name)
+                        print(f"Saved {len(dfs)} recorder(s) with frequency '{freq}' to sheet '{display_name}'")
+                        
+                    except Exception as e:
+                        print(f"Warning: Could not concatenate recorders with frequency '{freq}': {e}")
+                        # Save individually if concatenation fails
+                        for j, df in enumerate(dfs):
+                            individual_sheet_name = f"{display_name}_{j+1}"[:31]
+                            df.to_excel(writer, sheet_name=individual_sheet_name)
+                            print(f"Saved individual recorder '{freq_names[freq][j]}' to sheet '{individual_sheet_name}'")
+        
+        print(f"Recorders saved to Excel file: {excel_path}")
+
+    # else:
+    #     nmes = []
+    #     rec_to_csv = []
+        
+    #     for rec in model.recorders:
+    #         if hasattr(rec, 'to_dataframe'):
+    #             df = rec.to_dataframe()
+    #             nmes.append(rec.name)
+    #             rec_to_csv.append(df) 
+
+    #     rec_to_csv = pd.concat(rec_to_csv, axis=1)
+    #     rec_to_csv.columns = nmes
+    #     rec_to_csv.to_csv(os.path.join(output_directory, f"{base}_recorders.csv"))
 
 
 @cli.command(name='run_simulation')
