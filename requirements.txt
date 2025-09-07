@@ -1,0 +1,6 @@
+pywr
+pandas
+numpy
+tables
+click
+openpyxl

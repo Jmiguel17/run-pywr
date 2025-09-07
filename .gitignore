@@ -129,3 +129,9 @@ dmypy.json
 .pyre/
 
 .DS_Store
+
+# Custom
+run_pywr.egg-info/
+*.json
+!/run_pywr/json/test.json
+

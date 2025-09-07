@@ -29,8 +29,6 @@ import datetime
 #     write_file_to_s3
 # )
 
-
-
 # Suppress warnings in current Pywr
 warnings.filterwarnings("ignore", category=RuntimeWarning, message=r".*Document requires version.*")  # optimisation/__init__.py:111
 warnings.filterwarnings("ignore", category=FutureWarning, message=r".*Resampling with a PeriodIndex.*")  # dataframe_tools.py:127

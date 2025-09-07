@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "run-pywr"
+version = "0.1.0"
+authors = [
+  { name="Jose M. Gonzalez", email="jgonzalez@nexsys-analytics.com" },
+]
+description = "A Python package that provides a command-line interface (CLI) for running Pywr models."
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "pandas",
+    "numpy",
+    "tables",
+    "click",
+    "openpyxl",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/jmgonzalez-al/run-pywr"
+"Bug Tracker" = "https://github.com/jmgonzalez-al/run-pywr/issues"
+
+[project.scripts]
+run_pywr = "run_pywr.cli:start_cli"
+
+[project.optional-dependencies]
+dev = [
+    "platypus-opt",
+    "borg-moea",
+    "pywr",
+]

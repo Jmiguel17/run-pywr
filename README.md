@@ -6,12 +6,22 @@ This package also defines a rich set of custom Pywr `Parameters` and `Recorders`
 
 ## Installation
 
-To install the package, clone the repository and install it using pip from the root directory:
+To install the package, clone the repository and install it in editable mode using pip from the root directory:
 
 ```bash
 git clone <repository-url>
 cd run-pywr
-pip install .
+pip install -e .
+```
+
+This will install the package in editable mode, meaning that any changes you make to the source code will be immediately reflected when you run the `run-pywr` command.
+
+### Dependencies
+
+The package dependencies are listed in the `pyproject.toml` file. You can install them directly using pip:
+
+```bash
+pip install -r requirements.txt
 ```
 
 ## Usage
