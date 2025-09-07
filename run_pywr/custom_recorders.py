@@ -1650,7 +1650,7 @@ class SeasonalTransferConstraintRecorder(NodeRecorder):
         last_year = index[-1].year
         rule = rule.loc[:str(last_year), :].resample('Y').sum()
 
-        constraint = (rule - 4000) - outflow
+        constraint = (rule - 4200) - outflow
 
         return self._temporal_aggregator.aggregate_2d(constraint.values, axis=0, ignore_nan=self.ignore_nan)
     
