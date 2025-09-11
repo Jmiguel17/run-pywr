@@ -824,7 +824,7 @@ class AverageAnnualCropYieldScenarioRecorder(NodeRecorder):
         # units for crop_yield are in kg
         crop_yield = curtailment_ratio.multiply(areas, axis=1).multiply(yields, axis=1)
 
-        return crop_yield.mean(axis=0) #self._temporal_aggregator.aggregate_2d(crop_yield.values, axis=0, ignore_nan=self.ignore_nan) 
+        return self._temporal_aggregator.aggregate_2d(crop_yield.values, axis=0, ignore_nan=self.ignore_nan) #crop_yield.mean(axis=0) 
 
 
 AverageAnnualCropYieldScenarioRecorder.register()
