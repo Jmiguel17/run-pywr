@@ -586,7 +586,7 @@ def run_dams_value(filename):
 @cli.command(name='pyborg')
 @click.argument('filename', type=click.Path(file_okay=True, dir_okay=False, exists=True))
 @click.option('-s', '--seed', type=int, default=None)
-@click.option('-u', '--use-mpi', default=False)
+@click.option('-u', '--use-mpi', is_flag=True, default=False)
 @click.option('-n', '--max-nfe', type=int, default=1000)
 @click.option('-f', '--frequency', type=int, default=None)
 @click.option('-i', '--islands', type=int, default=1)
