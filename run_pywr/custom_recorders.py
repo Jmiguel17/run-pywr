@@ -331,6 +331,76 @@ class NashSutcliffeEfficiencyStorageRecorder(AbstractComparisonStorageRecorder):
 NashSutcliffeEfficiencyStorageRecorder.register()
 
 
+class RootMeanSquaredErrorStorageRecorder(AbstractComparisonStorageRecorder):
+    """ Recorder evaluates the RMSE between model and observed """
+    def values(self):
+
+        freq = self.obs_freq
+        obs = self._aligned_observed
+        mod = self.data
+
+        if freq is None:
+            mod = self.data
+        else:
+            if self.model.timestepper.freq == freq:
+                mod = pd.DataFrame(self.data, index=self.model.timestepper.datetime_index).resample(freq).mean()
+            else:
+                #print(f'OJO! The recorder associated to this node "{self.node.name}" '
+                      #f'has freq observed data =! freq model - '
+                      #f'Check if freq observed data >= freq model.')
+                mod = pd.DataFrame(self.data, index=self.model.timestepper.datetime_index.astype('datetime64[ns]')).resample(freq).mean()
+                mod.index = mod.index.strftime('%Y-%m')
+                obs.index = obs.index.astype('datetime64[ns]').strftime('%Y-%m')
+
+            #mod = pandas.DataFrame(self.data, index=self.model.timestepper.datetime_index).resample(freq).sum()
+
+        new = pd.merge(obs, mod, how='inner', left_index=True, right_index=True)
+        obs = new.iloc[:, 0].to_frame().T.reset_index(drop=True).T
+        mod = new.iloc[:, 1].to_frame().T.reset_index(drop=True).T
+
+        val = np.sqrt(np.mean((obs - mod) ** 2, axis=0))
+
+        return val.values
+
+
+RootMeanSquaredErrorStorageRecorder.register()
+
+
+class PercentBiasStorageRecorder(AbstractComparisonStorageRecorder):
+    """ Recorder evaluates the percent bias between model and observed """
+    def values(self):
+
+        freq = self.obs_freq
+        obs = self._aligned_observed
+        mod = self.data
+
+        if freq is None:
+            mod = self.data
+        else:
+            if self.model.timestepper.freq == freq:
+                mod = pd.DataFrame(self.data, index=self.model.timestepper.datetime_index).resample(freq).mean()
+            else:
+                #print(f'OJO! The recorder associated to this node "{self.node.name}" '
+                      #f'has freq observed data =! freq model - '
+                      #f'Check if freq observed data >= freq model.')
+                mod = pd.DataFrame(self.data, index=self.model.timestepper.datetime_index.astype('datetime64[ns]')).resample(freq).mean()
+                mod.index = mod.index.strftime('%Y-%m')
+                obs.index = obs.index.astype('datetime64[ns]').strftime('%Y-%m')
+
+            #mod = pandas.DataFrame(self.data, index=self.model.timestepper.datetime_index).resample(freq).sum()
+
+        new = pd.merge(obs,mod, how='inner', left_index=True, right_index=True)
+        obs = new.iloc[:, 0].to_frame().T.reset_index(drop=True).T
+        mod = new.iloc[:, 1].to_frame().T.reset_index(drop=True).T
+
+        val = np.sum(obs-mod, axis=0)*100/np.sum(obs, axis=0)
+
+        return val.values
+
+
+PercentBiasStorageRecorder.register()
+
+
 class ReservoirMonthlyReliabilityRecorder(NumpyArrayAbstractStorageRecorder):
 
     """
