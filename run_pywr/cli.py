@@ -84,8 +84,11 @@ def run(filename):
 
     os.makedirs(os.path.join(output_directory), exist_ok=True)
 
-    TablesRecorder(model, os.path.join(output_directory, f"{base}_parameters.h5"), parameters=[p for p in model.parameters if p.name is not None])
-    TablesRecorder(model, os.path.join(output_directory, f"{base}_nodes.h5"), nodes=[n for n in model.nodes if n.nodes is not None])
+    TablesRecorder(model, 
+                   os.path.join(output_directory, f"{base}_and_nodes_parameters.h5"), 
+                   parameters=[p for p in model.parameters if p.name is not None], 
+                   nodes = [n.name for n in model.nodes if n.name is not None])
+
     CSVRecorder(model, os.path.join(output_directory, f"{base}_nodes.csv"))
 
     logger.info('Starting model run.')
