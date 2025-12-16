@@ -214,7 +214,7 @@ NashSutcliffeEfficiencyNodeRecorder.register()
 
 
 class PercentBiasNodeRecorder(AbstractComparisonNodeRecorder):
-    """ Recorder evaluates the percent bias between model and observed """
+    """ Recorder evaluates the absolute percent bias between model and observed """
     def values(self):
 
         freq = self.obs_freq
@@ -240,7 +240,8 @@ class PercentBiasNodeRecorder(AbstractComparisonNodeRecorder):
         obs = new.iloc[:, 0].to_frame().T.reset_index(drop=True).T
         mod = new.iloc[:, 1].to_frame().T.reset_index(drop=True).T
 
-        val = np.sum(obs-mod, axis=0)*100/np.sum(obs, axis=0)
+        # val = np.sum(obs-mod, axis=0)*100/np.sum(obs, axis=0)
+        val = np.abs(np.sum(obs - mod, axis=0) * 100 / np.sum(obs, axis=0))
 
         return val.values
 
