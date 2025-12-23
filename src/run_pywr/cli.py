@@ -82,8 +82,11 @@ def run(filename):
 
     os.makedirs(os.path.join(output_directory), exist_ok=True)
 
-    # TablesRecorder(model, os.path.join(output_directory, f"{base}_parameters.h5"), parameters=[p for p in model.parameters if p.name is not None])
-    TablesRecorder(model, os.path.join(output_directory, f"{base}_parameters.h5"), parameters=[p for p in model.parameters if p.name is not None])
+    TablesRecorder(model, 
+                   os.path.join(output_directory, f"{base}_and_nodes_parameters.h5"), 
+                   parameters=[p for p in model.parameters if p.name is not None], 
+                   nodes = [n.name for n in model.nodes if n.name is not None])
+
     CSVRecorder(model, os.path.join(output_directory, f"{base}_nodes.csv"))
 
     logger.info('Starting model run.')
@@ -584,7 +587,7 @@ def run_dams_value(filename):
 @cli.command(name='pyborg')
 @click.argument('filename', type=click.Path(file_okay=True, dir_okay=False, exists=True))
 @click.option('-s', '--seed', type=int, default=None)
-@click.option('-u', '--use-mpi', default=False)
+@click.option('-u', '--use-mpi', is_flag=True, default=False)
 @click.option('-n', '--max-nfe', type=int, default=1000)
 @click.option('-f', '--frequency', type=int, default=None)
 @click.option('-i', '--islands', type=int, default=1)
