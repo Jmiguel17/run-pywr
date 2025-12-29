@@ -14,7 +14,7 @@ This module groups recorders into four families:
    - Annual irrigation revenue based on annual curtailment ratio
    - Annual hydropower energy or revenue based on Pywr's `hydropower_calculation`
 
-3) Robustness / persistence (annual deficit run-length family)
+3) Persistence (annual deficit run-length family)
    - Annual deficit-year frequency
    - Annual deficit episode count (runs >= K years)
    - Annual deficit episode excess years (persistence-weighted)
@@ -783,6 +783,322 @@ class AbsolutePercentBiasStorageRecorder(BaseComparisonStorageRecorder):
 
 AbsolutePercentBiasStorageRecorder.register()
 
+class AnnualIrrigationYieldRecorder(NodeRecorder):
+    """
+    Annual irrigation crop yield per scenario derived from annual supply/demand curtailment.
+
+    Purpose
+    -------
+    This recorder produces:
+      1) an annual time series of irrigation crop yield for each scenario; and
+      2) a single scalar value per scenario by aggregating annual yields over time.
+
+    It is a companion to :class:`AnnualIrrigationRevenueRecorder` and uses the same
+    annual curtailment-ratio logic, but returns *yield* instead of *revenue*.
+
+    Core calculation
+    ----------------
+    A curtailment ratio is computed from ANNUAL totals:
+
+        annual_supply  = sum_t( supply_rate_t  * timestep_days_t )     if flow_is_per_day
+        annual_demand  = sum_t( demand_rate_t  * timestep_days_t )     if flow_is_per_day
+        r_y            = annual_supply / annual_demand
+
+    Annual crop yield is then computed as:
+
+        crop_yield_kg  = r_y * area_ha * yield_per_area_kg_ha
+
+    and returned in the requested output units.
+
+    Key assumptions and required unit consistency
+    ---------------------------------------------
+    The recorder does NOT perform unit conversion of flows or agronomic parameters.
+    You must ensure that:
+
+    1) Supply and demand are physically consistent:
+       - If ``flow_is_per_day=True`` (default), both `node.flow` and the demand source
+         (`demand_parameter` or `node.max_flow`) must be per-day rates, and are multiplied
+         by ``timestep.days`` to obtain timestep totals before annual aggregation.
+       - If your model uses per-timestep totals already, set ``flow_is_per_day=False``.
+
+    2) Agronomic units:
+       - ``area`` must be in hectares (ha).
+       - ``yield_per_area`` must be in kg/ha.
+
+    Curtailment ratio semantics
+    ---------------------------
+    Curtailment ratio is computed on annual totals:
+
+        r_y = annual_supply / annual_demand
+
+    Special cases:
+    - annual_demand == 0:
+        r_y is set to ``zero_demand_ratio`` (default 1.0).
+        Rationale: irrigation demand may legitimately be zero in some years (e.g., rainfall
+        meets crop water requirement); this should not force yield to zero.
+    - clip_ratio:
+        If True, r_y is clipped to [0, 1] to prevent over-supply inflating yield beyond
+        the nominal maximum.
+
+    Outputs
+    -------
+    - `to_dataframe()` returns the annual yield time series with:
+        index   = annual timestamps (YYYY-12-31),
+        columns = model.scenarios.multiindex,
+        values  = annual crop yield (units controlled by `output_unit`).
+    - `values()` returns a 1D numpy array (n_scenarios,) computed by applying
+      a temporal aggregation (`temporal_agg_func`) across years.
+    - Scenario aggregation (single scalar across scenarios) is handled by Pywr's
+      standard `agg_func` mechanism when calling `aggregated_value()`.
+
+    Configuration via JSON
+    ----------------------
+    Example (general)
+    -----------------
+    {
+      "my_yield_recorder": {
+        "type": "AnnualIrrigationYieldRecorder",
+        "node": "AGR_NODE_NAME",
+        "temporal_agg_func": "mean",
+        "agg_func": "mean",
+        "flow_is_per_day": true,
+        "zero_demand_ratio": 1.0,
+        "clip_ratio": true,
+        "output_unit": "t"
+      }
+    }
+
+    Optional overrides:
+      - area: float or Parameter reference (ha)
+      - yield_per_area: float or Parameter reference (kg/ha)
+      - demand_parameter: Parameter reference (defaults to node.max_flow)
+
+    output_unit:
+      - "kg" (kg)
+      - "t"  (metric tonnes; default)
+      - "kt" (kilotonnes)
+
+    """
+
+    def __init__(
+        self,
+        model,
+        node,
+        temporal_agg_func="mean",
+        flow_is_per_day=True,
+        zero_demand_ratio=1.0,
+        clip_ratio=True,
+        area=None,
+        yield_per_area=None,
+        demand_parameter=None,
+        output_unit="t",
+        **kwargs,
+    ):
+        super().__init__(model, node, **kwargs)
+
+        self.flow_is_per_day = bool(flow_is_per_day)
+        self.zero_demand_ratio = float(zero_demand_ratio)
+        self.clip_ratio = bool(clip_ratio)
+
+        self.output_unit = str(output_unit).lower().strip()
+        if self.output_unit not in ("kg", "t", "kt"):
+            raise ValueError("output_unit must be one of {'kg', 't', 'kt'}")
+
+        self._temporal_aggregator = Aggregator(temporal_agg_func)
+        self._temporal_aggregator.func = temporal_agg_func
+
+        self._area_src = area
+        self._yield_src = yield_per_area
+        self._demand_src = demand_parameter  # defaults to node.max_flow if None
+
+        self._area = None
+        self._yield = None
+
+        self._year_labels = None
+        self._year_index = None
+        self._annual_supply = None
+        self._annual_demand = None
+
+        self._annual_yield = None
+        self._annual_df = None
+
+        self._demand_param = None
+        self._resolved_area_src = None
+        self._resolved_yield_src = None
+
+    @staticmethod
+    def _eval_scenario_array(model, src, n_scen):
+        if isinstance(src, (int, float, np.floating)):
+            return np.full(n_scen, float(src), dtype=float)
+
+        if hasattr(src, "get_all_values"):
+            try:
+                vals = np.asarray(src.get_all_values(), dtype=float)
+                if vals.shape[0] == n_scen:
+                    return vals
+            except Exception:
+                pass
+
+        out = np.zeros(n_scen, dtype=float)
+        for si in model.scenarios.combinations:
+            out[si.global_id] = float(src.get_value(si))
+        return out
+
+    def setup(self):
+        super().setup()
+
+        dt_index = self.model.timestepper.datetime_index
+        if isinstance(dt_index, pd.PeriodIndex):
+            dt_index = dt_index.to_timestamp()
+
+        years = np.asarray([d.year for d in dt_index], dtype=int)
+        self._year_labels = np.unique(years)
+        year_to_slot = {y: i for i, y in enumerate(self._year_labels)}
+        self._year_index = np.asarray([year_to_slot[y] for y in years], dtype=int)
+
+        n_years = len(self._year_labels)
+        n_scen = len(self.model.scenarios.combinations)
+
+        self._annual_supply = np.zeros((n_years, n_scen), dtype=float)
+        self._annual_demand = np.zeros((n_years, n_scen), dtype=float)
+
+        if self._demand_src is not None:
+            self._demand_param = self._demand_src
+        else:
+            mf = getattr(self.node, "max_flow", None)
+            if mf is None:
+                raise AttributeError("Node has no max_flow; provide demand_parameter in recorder config.")
+            self._demand_param = mf
+
+        self._resolved_area_src = self._area_src if self._area_src is not None else getattr(self._demand_param, "area", None)
+        self._resolved_yield_src = self._yield_src if self._yield_src is not None else getattr(self._demand_param, "yield_per_area", None)
+
+        if self._resolved_area_src is None or self._resolved_yield_src is None:
+            raise AttributeError("Could not resolve area and/or yield_per_area for yield calculation.")
+
+        self._area = None
+        self._yield = None
+        self._annual_yield = None
+        self._annual_df = None
+
+    def reset(self):
+        super().reset()
+        self._annual_supply[:, :] = 0.0
+        self._annual_demand[:, :] = 0.0
+        self._annual_yield = None
+        self._annual_df = None
+        self._area = None
+        self._yield = None
+
+    def after(self):
+        ts = self.model.timestepper.current
+        y_i = self._year_index[ts.index]
+        n_scen = self._annual_supply.shape[1]
+
+        if self._area is None:
+            self._area = self._eval_scenario_array(self.model, self._resolved_area_src, n_scen)
+        if self._yield is None:
+            self._yield = self._eval_scenario_array(self.model, self._resolved_yield_src, n_scen)
+
+        w = float(ts.days) if self.flow_is_per_day else 1.0
+
+        supply_rate = np.asarray(self.node.flow, dtype=float)
+        if supply_rate.shape == ():
+            supply_rate = np.full(n_scen, float(supply_rate), dtype=float)
+
+        if hasattr(self._demand_param, "get_all_values"):
+            try:
+                demand_rate = np.asarray(self._demand_param.get_all_values(), dtype=float)
+            except Exception:
+                demand_rate = np.zeros(n_scen, dtype=float)
+                for si in self.model.scenarios.combinations:
+                    demand_rate[si.global_id] = float(self._demand_param.get_value(si))
+        else:
+            demand_rate = np.zeros(n_scen, dtype=float)
+            for si in self.model.scenarios.combinations:
+                demand_rate[si.global_id] = float(self._demand_param.get_value(si))
+
+        self._annual_supply[y_i, :] += supply_rate * w
+        self._annual_demand[y_i, :] += demand_rate * w
+
+    def finish(self):
+        super().finish()
+
+        if self._area is None or self._yield is None:
+            raise RuntimeError(
+                "Scenario-constant inputs (area/yield_per_area) were not evaluated. "
+                "This typically means `after()` was never called (e.g., model did not run)."
+            )
+
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = np.where(
+                self._annual_demand == 0.0,
+                self.zero_demand_ratio,
+                self._annual_supply / self._annual_demand,
+            )
+            ratio = np.nan_to_num(ratio, nan=self.zero_demand_ratio, posinf=self.zero_demand_ratio, neginf=0.0)
+
+        if self.clip_ratio:
+            ratio = np.clip(ratio, 0.0, 1.0)
+
+        crop_yield_kg = ratio * self._area[None, :] * self._yield[None, :]
+
+        if self.output_unit == "kg":
+            out = crop_yield_kg
+        elif self.output_unit == "t":
+            out = crop_yield_kg / 1e3
+        else:  # "kt"
+            out = crop_yield_kg / 1e6
+
+        self._annual_yield = out
+
+        sc_index = self.model.scenarios.multiindex
+        annual_dt_index = pd.to_datetime([f"{y}-12-31" for y in self._year_labels])
+        self._annual_df = pd.DataFrame(out, index=annual_dt_index, columns=sc_index)
+
+    def to_dataframe(self):
+        if self._annual_df is None:
+            self.finish()
+        return self._annual_df
+
+    def values(self):
+        if self._annual_yield is None:
+            self.finish()
+
+        return self._temporal_aggregator.aggregate_2d(
+            self._annual_yield,
+            axis=0,
+            ignore_nan=self.ignore_nan,
+        )
+
+    @classmethod
+    def load(cls, model, data):
+        node = model._get_node_from_ref(model, data.pop("node"))
+
+        def load_float_or_param(key, default=None):
+            if key not in data:
+                return default
+            v = data.pop(key)
+            if isinstance(v, (int, float)):
+                return float(v)
+            return load_parameter(model, v)
+
+        return cls(
+            model,
+            node,
+            temporal_agg_func=data.pop("temporal_agg_func", "mean"),
+            flow_is_per_day=data.pop("flow_is_per_day", True),
+            zero_demand_ratio=data.pop("zero_demand_ratio", 1.0),
+            clip_ratio=data.pop("clip_ratio", True),
+            area=load_float_or_param("area", None),
+            yield_per_area=load_float_or_param("yield_per_area", None),
+            demand_parameter=load_float_or_param("demand_parameter", None),
+            output_unit=data.pop("output_unit", "t"),
+            **data,
+        )
+
+
+AnnualIrrigationYieldRecorder.register()
 
 class AnnualIrrigationRevenueRecorder(NodeRecorder):
     """
@@ -964,8 +1280,8 @@ class AnnualIrrigationRevenueRecorder(NodeRecorder):
     - values():
         * Returns per-scenario scalar values by temporally aggregating annual revenue (axis=0).
 
-    Notes on robustness
-    -------------------
+    Notes on persistence-oriented frequency indicator
+    -------------------------------------------------
     - The recorder avoids pandas resampling and instead uses an explicit year mapping derived from the
       model's timestep index. This reduces assumptions about timestep regularity (daily/monthly/etc.).
     - The `zero_demand_ratio` behaviour is critical for irrigation-demand parameters where irrigation
@@ -1819,7 +2135,7 @@ AnnualHydroPowerRecorder.register()
 
 
 # =============================================================================
-# Annual deficit / robustness recorders (run-length family)
+# Annual deficit / persistence recorders (run-length family)
 # =============================================================================
 
 class _BaseAnnualDeficitFlagRecorder(NodeRecorder):
@@ -2086,7 +2402,7 @@ class AnnualDeficitYearsRecorder(_AnnualFlowDeficitFlagRecorder):
 
     Metric family and intent
     ------------------------
-    This is a robustness / persistence-oriented frequency indicator. It answers:
+    This is a persistence-oriented frequency indicator. It answers:
         "How many simulation years experienced at least one deficit event?"
 
     Annual deficit-year definition
@@ -2594,7 +2910,6 @@ class AnnualMaxConsecutiveStorageDeficitYearsRecorder(_AnnualStorageDeficitFlagR
 
 
 AnnualMaxConsecutiveStorageDeficitYearsRecorder.register()
-
 
 
 # =============================================================================
@@ -3114,9 +3429,6 @@ class AnnualDemandSatisfactionReliabilityRecorder(_BasePeriodFailureFlagRecorder
 AnnualDemandSatisfactionReliabilityRecorder.register()
 
 
-
-
-
 # =============================================================================
 # Annual deficit fraction (replaces AnnualDeficitRecorder)
 # =============================================================================
@@ -3497,3 +3809,404 @@ class MonthlyStorageThresholdResilienceRecorder(PeriodFailureResilienceRecorder)
 
 
 MonthlyStorageThresholdResilienceRecorder.register()
+
+
+# =============================================================================
+# Vulnerability (Hashimoto et al., 1982)
+# =============================================================================
+
+class AnnualVulnerabilityRecorder(NodeRecorder):
+    """Annual vulnerability recorder based on Hashimoto et al. (1982).
+
+    Definition implemented
+    ----------------------
+    This recorder implements the episode-based vulnerability definition used in the
+    Hashimoto et al. (1982) reservoir–irrigation example:
+
+        Vulnerability = mean over failure episodes of (maximum deficit within the episode)
+
+    A “failure episode” is a contiguous sequence of failure years.
+    For each episode, compute the maximum annual deficit magnitude within that episode.
+    Vulnerability is the average of these episode maxima.
+
+    Modes
+    -----
+    mode="demand" (default)
+        Annual deficit is computed from annual demand D_y and annual supply S_y.
+
+        deficit_volume_y  = max(0, D_y - S_y)
+        deficit_fraction_y = deficit_volume_y / D_y   (if D_y > 0 else 0)
+
+        Failure years are identified using deficit_fraction_y > deficit_threshold.
+
+        Episode severity uses:
+          - severity="fraction": deficit_fraction_y
+          - severity="volume"  : deficit_volume_y
+
+    mode="storage"
+        Failure years are defined relative to a storage threshold:
+            min_volume_y < threshold * max_volume
+
+        Annual deficit magnitude is:
+            storage_shortfall_y = max(0, threshold*max_volume - min_volume_y)
+
+    Timestep handling
+    -----------------
+    - If monthly_seasonality is provided, the timestep is split at month boundaries and only
+      segments whose month is included contribute (supports seasonal vulnerability).
+    - Otherwise, segmentation is done at year boundaries.
+    - Contributions are capped strictly to timestepper.start/end to prevent an extra trailing year.
+
+    Parameters
+    ----------
+    mode : {"demand", "storage"}, default "demand"
+    deficit_threshold : float, default 0.0
+        Failure threshold on annual deficit fraction (demand mode).
+    severity : {"fraction", "volume"}, default "fraction"
+        Deficit magnitude used for episode maxima (demand mode).
+    flow_is_rate : bool, default False
+        If True, interpret flow and max_flow as rates per day and integrate using segment duration.
+        If False, interpret them as per-timestep volumes and allocate proportionally.
+    threshold : float, optional
+        Required when mode="storage". Storage failure threshold fraction of max volume.
+    monthly_seasonality : list[int], optional
+        Months (1–12) to include in the annual integration/scan.
+
+    JSON usage (general examples)
+    -----------------------------
+    Demand node (severity as deficit fraction):
+    {
+      "Some demand node: Annual vulnerability": {
+        "type": "AnnualVulnerabilityRecorder",
+        "node": "DEMAND_NODE_NAME",
+        "mode": "demand",
+        "severity": "fraction",
+        "deficit_threshold": 0.0,
+        "flow_is_rate": true,
+        "agg_func": "mean"
+      }
+    }
+
+    Storage node (threshold shortfall):
+    {
+      "Some reservoir: Annual vulnerability": {
+        "type": "AnnualVulnerabilityRecorder",
+        "node": "RESERVOIR_NODE_NAME",
+        "mode": "storage",
+        "threshold": 0.2,
+        "monthly_seasonality": [4,5,6,7,8,9],
+        "agg_func": "mean"
+      }
+    }
+    """
+
+    def __init__(
+        self,
+        model,
+        node,
+        mode="demand",
+        deficit_threshold=0.0,
+        severity="fraction",
+        flow_is_rate=False,
+        threshold=None,
+        monthly_seasonality=None,
+        **kwargs,
+    ):
+        super().__init__(model, node, **kwargs)
+
+        mode = str(mode).lower().strip()
+        if mode not in ("demand", "storage"):
+            raise ValueError("mode must be 'demand' or 'storage'")
+        self.mode = mode
+
+        self.deficit_threshold = float(deficit_threshold)
+
+        severity = str(severity).lower().strip()
+        if severity not in ("fraction", "volume"):
+            raise ValueError("severity must be 'fraction' or 'volume'")
+        self.severity = severity
+
+        self.flow_is_rate = bool(flow_is_rate)
+
+        self.threshold = None if threshold is None else float(threshold)
+        self._monthly_seasonality = monthly_seasonality
+
+        self._dt_starts = None
+        self._model_start = None
+        self._model_end = None
+        self._model_stop = None
+
+        self._years = None
+        self._year_to_slot = None
+
+        self._annual_supply = None
+        self._annual_demand = None
+        self._annual_min_volume = None
+
+        self._annual_deficit_volume = None
+        self._annual_deficit_fraction = None
+        self._annual_failure = None
+        self._annual_severity = None
+        self._episode_id = None
+        self._vulnerability = None
+
+    def setup(self):
+        super().setup()
+
+        self._dt_starts = _as_timestamp_index(self.model.timestepper.datetime_index)
+        self._model_start, self._model_end = _model_start_end(self.model, self._dt_starts)
+        self._model_stop = self._model_end + pd.Timedelta(days=1)
+
+        y0 = int(self._model_start.year)
+        y1 = int(self._model_end.year)
+        self._years = np.arange(y0, y1 + 1, dtype=int)
+        self._year_to_slot = {y: i for i, y in enumerate(self._years)}
+
+        n_years = len(self._years)
+        n_scen = len(self.model.scenarios.combinations)
+
+        if self.mode == "demand":
+            self._annual_supply = np.zeros((n_years, n_scen), dtype=float)
+            self._annual_demand = np.zeros((n_years, n_scen), dtype=float)
+            self._annual_min_volume = None
+        else:
+            if self.threshold is None:
+                raise ValueError("threshold must be provided when mode='storage'")
+            self._annual_min_volume = np.full((n_years, n_scen), np.inf, dtype=float)
+            self._annual_supply = None
+            self._annual_demand = None
+
+        self._clear_caches()
+
+    def reset(self):
+        super().reset()
+        if self._annual_supply is not None:
+            self._annual_supply[:, :] = 0.0
+        if self._annual_demand is not None:
+            self._annual_demand[:, :] = 0.0
+        if self._annual_min_volume is not None:
+            self._annual_min_volume[:, :] = np.inf
+        self._clear_caches()
+
+    def _clear_caches(self):
+        self._annual_deficit_volume = None
+        self._annual_deficit_fraction = None
+        self._annual_failure = None
+        self._annual_severity = None
+        self._episode_id = None
+        self._vulnerability = None
+
+    def _iter_segments(self, dt_start, dt_end):
+        if self._monthly_seasonality is not None:
+            yield from _iter_month_segments(dt_start, dt_end)
+        else:
+            yield from _iter_year_segments(dt_start, dt_end)
+
+    def after(self):
+        ts = self.model.timestepper.current
+        dt_start = self._dt_starts[ts.index]
+
+        dt_end_raw = dt_start + pd.Timedelta(days=float(ts.days))
+        dt_end = dt_end_raw if dt_end_raw <= self._model_stop else self._model_stop
+        if dt_end <= dt_start:
+            return 0
+
+        months_set = None
+        if self._monthly_seasonality is not None:
+            months_set = set(int(m) for m in self._monthly_seasonality)
+
+        scen = self.model.scenarios.combinations
+        n_scen = len(scen)
+
+        if self.mode == "demand":
+            node = self.node
+            flow = np.asarray(node.flow, dtype=float)
+            if flow.shape == ():
+                flow = np.full(n_scen, float(flow), dtype=float)
+
+            for seg_start, seg_end in self._iter_segments(dt_start, dt_end):
+                if months_set is not None and seg_start.month not in months_set:
+                    continue
+
+                seg_days = _segment_days(seg_start, seg_end)
+                if seg_days <= 0.0:
+                    continue
+
+                year_slot = self._year_to_slot.get(int(seg_start.year), None)
+                if year_slot is None:
+                    continue
+
+                w = seg_days if self.flow_is_rate else (seg_days / float(ts.days))
+
+                for si in scen:
+                    gid = si.global_id
+                    demand = float(node.get_max_flow(si))
+                    self._annual_supply[year_slot, gid] += flow[gid] * w
+                    self._annual_demand[year_slot, gid] += demand * w
+
+        else:
+            node = self.node
+            vol = np.asarray(node.volume, dtype=float)
+            if vol.shape == ():
+                vol = np.full(n_scen, float(vol), dtype=float)
+
+            for seg_start, seg_end in self._iter_segments(dt_start, dt_end):
+                if months_set is not None and seg_start.month not in months_set:
+                    continue
+
+                if _segment_days(seg_start, seg_end) <= 0.0:
+                    continue
+
+                year_slot = self._year_to_slot.get(int(seg_start.year), None)
+                if year_slot is None:
+                    continue
+
+                for si in scen:
+                    gid = si.global_id
+                    if vol[gid] < self._annual_min_volume[year_slot, gid]:
+                        self._annual_min_volume[year_slot, gid] = vol[gid]
+
+        return 0
+
+    def _compute_annual_series(self):
+        if self._annual_failure is not None:
+            return
+
+        n_years = len(self._years)
+        n_scen = len(self.model.scenarios.combinations)
+
+        if self.mode == "demand":
+            S = self._annual_supply
+            D = self._annual_demand
+
+            deficit_vol = np.maximum(0.0, D - S)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                deficit_frac = np.where(D > 0.0, deficit_vol / D, 0.0)
+
+            failure = (deficit_frac > self.deficit_threshold) & (D > 0.0)
+            severity = deficit_frac if self.severity == "fraction" else deficit_vol
+
+            self._annual_deficit_volume = deficit_vol
+            self._annual_deficit_fraction = deficit_frac
+            self._annual_failure = failure
+            self._annual_severity = severity
+
+        else:
+            min_vol = self._annual_min_volume
+            min_vol_safe = np.where(np.isfinite(min_vol), min_vol, np.inf)
+
+            max_vol = np.zeros(n_scen, dtype=float)
+            for si in self.model.scenarios.combinations:
+                max_vol[si.global_id] = float(self.node.get_max_volume(si))
+
+            target = self.threshold * max_vol[None, :]
+            deficit = np.maximum(0.0, target - min_vol_safe)
+
+            self._annual_deficit_volume = deficit
+            self._annual_deficit_fraction = None
+            self._annual_failure = deficit > 0.0
+            self._annual_severity = deficit
+
+        # Episode ids (runs of failure years)
+        episode_id = np.zeros((n_years, n_scen), dtype=float)
+        for s in range(n_scen):
+            eid = 0
+            in_run = False
+            for y in range(n_years):
+                if self._annual_failure[y, s]:
+                    if not in_run:
+                        eid += 1
+                        in_run = True
+                    episode_id[y, s] = float(eid)
+                else:
+                    in_run = False
+        self._episode_id = episode_id
+
+    def _compute_vulnerability(self):
+        if self._vulnerability is not None:
+            return self._vulnerability
+
+        self._compute_annual_series()
+
+        failure = self._annual_failure
+        sev = self._annual_severity
+        n_years, n_scen = failure.shape
+
+        v = np.zeros(n_scen, dtype=float)
+
+        for s in range(n_scen):
+            episode_maxima = []
+            run_active = False
+            run_max = 0.0
+
+            for y in range(n_years):
+                if failure[y, s]:
+                    if not run_active:
+                        run_active = True
+                        run_max = float(sev[y, s])
+                    else:
+                        val = float(sev[y, s])
+                        if val > run_max:
+                            run_max = val
+                else:
+                    if run_active:
+                        episode_maxima.append(run_max)
+                        run_active = False
+
+            if run_active:
+                episode_maxima.append(run_max)
+
+            v[s] = float(np.mean(episode_maxima)) if episode_maxima else 0.0
+
+        self._vulnerability = v
+        return v
+
+    def to_dataframe(self):
+        self._compute_annual_series()
+
+        idx = pd.to_datetime([f"{y}-12-31" for y in self._years])
+        sc_index = self.model.scenarios.multiindex
+
+        parts = []
+
+        sev_df = pd.DataFrame(self._annual_severity, index=idx, columns=sc_index)
+        sev_df.columns = pd.MultiIndex.from_product([["severity"], sev_df.columns])
+        parts.append(sev_df)
+
+        fail_df = pd.DataFrame(self._annual_failure.astype(float), index=idx, columns=sc_index)
+        fail_df.columns = pd.MultiIndex.from_product([["failure"], fail_df.columns])
+        parts.append(fail_df)
+
+        eid_df = pd.DataFrame(self._episode_id, index=idx, columns=sc_index)
+        eid_df.columns = pd.MultiIndex.from_product([["episode_id"], eid_df.columns])
+        parts.append(eid_df)
+
+        if self.mode == "demand":
+            frac_df = pd.DataFrame(self._annual_deficit_fraction, index=idx, columns=sc_index)
+            frac_df.columns = pd.MultiIndex.from_product([["deficit_fraction"], frac_df.columns])
+            parts.append(frac_df)
+
+            vol_df = pd.DataFrame(self._annual_deficit_volume, index=idx, columns=sc_index)
+            vol_df.columns = pd.MultiIndex.from_product([["deficit_volume"], vol_df.columns])
+            parts.append(vol_df)
+
+        out = pd.concat(parts, axis=1)
+        out.columns.names = ["metric"] + list(getattr(sc_index, "names", ["scenario"]))
+        return out
+
+    def values(self):
+        return self._compute_vulnerability()
+
+    def aggregated_value(self):
+        try:
+            return super().aggregated_value()
+        except Exception:
+            return _scenario_aggregate_fallback(self, self.values())
+
+    @classmethod
+    def load(cls, model, data):
+        node = model._get_node_from_ref(model, data.pop("node"))
+        return cls(model, node, **data)
+
+
+AnnualVulnerabilityRecorder.register()
