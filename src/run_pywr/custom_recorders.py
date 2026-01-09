@@ -4167,28 +4167,21 @@ class AnnualVulnerabilityRecorder(NodeRecorder):
         idx = pd.to_datetime([f"{y}-12-31" for y in self._years])
         sc_index = self.model.scenarios.multiindex
 
-        parts = []
-
-        sev_df = pd.DataFrame(self._annual_severity, index=idx, columns=sc_index)
-        sev_df.columns = pd.MultiIndex.from_product([["severity"], sev_df.columns])
-        parts.append(sev_df)
-
-        fail_df = pd.DataFrame(self._annual_failure.astype(float), index=idx, columns=sc_index)
-        fail_df.columns = pd.MultiIndex.from_product([["failure"], fail_df.columns])
-        parts.append(fail_df)
-
-        eid_df = pd.DataFrame(self._episode_id, index=idx, columns=sc_index)
-        eid_df.columns = pd.MultiIndex.from_product([["episode_id"], eid_df.columns])
-        parts.append(eid_df)
+        # Robust approach: concat using dict keys to add an outer "metric" level
+        # without re-wrapping an existing MultiIndex scenario columns.
+        parts = {
+            "severity": pd.DataFrame(self._annual_severity, index=idx, columns=sc_index),
+            "failure": pd.DataFrame(self._annual_failure.astype(float), index=idx, columns=sc_index),
+            "episode_id": pd.DataFrame(self._episode_id, index=idx, columns=sc_index),
+        }
 
         if self.mode == "demand":
-            frac_df = pd.DataFrame(self._annual_deficit_fraction, index=idx, columns=sc_index)
-            frac_df.columns = pd.MultiIndex.from_product([["deficit_fraction"], frac_df.columns])
-            parts.append(frac_df)
-
-            vol_df = pd.DataFrame(self._annual_deficit_volume, index=idx, columns=sc_index)
-            vol_df.columns = pd.MultiIndex.from_product([["deficit_volume"], vol_df.columns])
-            parts.append(vol_df)
+            parts["deficit_fraction"] = pd.DataFrame(
+                self._annual_deficit_fraction, index=idx, columns=sc_index
+            )
+            parts["deficit_volume"] = pd.DataFrame(
+                self._annual_deficit_volume, index=idx, columns=sc_index
+            )
 
         out = pd.concat(parts, axis=1)
         out.columns.names = ["metric"] + list(getattr(sc_index, "names", ["scenario"]))
